@@ -2,6 +2,9 @@
 name = "provis"
 version = "0.0.0"
 requires-python = ">=3.11"
+dependencies = [
+    "libcst>=1.4",
+]
 
 [tool.ruff]
 line-length = 100
