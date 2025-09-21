@@ -1,0 +1,18 @@
+[project]
+name = "provis"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+select = ["E","F","I","UP","B","SIM","PL","RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
