@@ -21,6 +21,7 @@ else:
 from .cfg import BlockRow, CfgEdgeRow
 from .dfg import DfgNodeRow, DfgEdgeRow
 from .normalize import NodeRow, EdgeRow, NodeKind, EdgeKind
+from .symbols import SymbolRow, AliasRow
 # Anomalies
 from .discovery import Anomaly
 
@@ -72,6 +73,8 @@ class UcgStore:
         (self._staging / "cfg_edges").mkdir(parents=True, exist_ok=True)
         (self._staging / "dfg_nodes").mkdir(parents=True, exist_ok=True)
         (self._staging / "dfg_edges").mkdir(parents=True, exist_ok=True)
+        (self._staging / "symbols").mkdir(parents=True, exist_ok=True)
+        (self._staging / "aliases").mkdir(parents=True, exist_ok=True)
 
         # Schemas
         self._node_schema = _node_schema()
@@ -81,6 +84,8 @@ class UcgStore:
         self._cfg_edge_schema = _cfg_edge_schema()
         self._dfg_node_schema = _dfg_node_schema()
         self._dfg_edge_schema = _dfg_edge_schema()
+        self._symbol_schema = _symbol_schema()
+        self._alias_schema = _alias_schema()
 
         # Buffers
         self._node_buf = _AdaptiveRowBuffer(self._node_schema, self.roll_rows, self.max_buffer_memory_mb)
@@ -90,6 +95,8 @@ class UcgStore:
         self._cfg_edge_buf = _AdaptiveRowBuffer(self._cfg_edge_schema, self.roll_rows, self.max_buffer_memory_mb)
         self._dfg_node_buf = _AdaptiveRowBuffer(self._dfg_node_schema, self.roll_rows, self.max_buffer_memory_mb)
         self._dfg_edge_buf = _AdaptiveRowBuffer(self._dfg_edge_schema, self.roll_rows, self.max_buffer_memory_mb)
+        self._symbol_buf = _AdaptiveRowBuffer(self._symbol_schema, self.roll_rows, self.max_buffer_memory_mb)
+        self._alias_buf = _AdaptiveRowBuffer(self._alias_schema, self.roll_rows, self.max_buffer_memory_mb)
 
         # Counters/indices
         self._node_file_idx = 0
@@ -99,6 +106,8 @@ class UcgStore:
         self._cfg_edge_file_idx = 0
         self._dfg_node_file_idx = 0
         self._dfg_edge_file_idx = 0
+        self._symbol_file_idx = 0
+        self._alias_file_idx = 0
         self._node_rows_total = 0
         self._edge_rows_total = 0
         self._anomaly_rows_total = 0
@@ -106,6 +115,8 @@ class UcgStore:
         self._cfg_edge_rows_total = 0
         self._dfg_node_rows_total = 0
         self._dfg_edge_rows_total = 0
+        self._symbol_rows_total = 0
+        self._alias_rows_total = 0
         self._bytes_written = 0
 
         # Compression
@@ -188,6 +199,26 @@ class UcgStore:
             else:
                 raise ValueError(f"unknown dfg row kind: {kind!r}")
 
+    def append_symbols(self, rows: Iterable[Tuple[str, object]]) -> None:
+        """
+        Accept ('symbol', SymbolRow) and ('alias', AliasRow) tuples.
+        """
+        for kind, row in rows:
+            if kind == "symbol":
+                if not isinstance(row, SymbolRow):
+                    raise TypeError("symbol row must be SymbolRow")
+                self._symbol_buf.add(_symbol_to_arrow_row(row))
+                if self._symbol_buf.should_roll():
+                    self._flush_symbols()
+            elif kind == "alias":
+                if not isinstance(row, AliasRow):
+                    raise TypeError("alias row must be AliasRow")
+                self._alias_buf.add(_alias_to_arrow_row(row))
+                if self._alias_buf.should_roll():
+                    self._flush_aliases()
+            else:
+                raise ValueError(f"unknown symbol-kind: {kind!r}")
+
     # ----------------------------- flush/finalize ------------------------------
 
     def flush(self) -> None:
@@ -198,6 +229,8 @@ class UcgStore:
         self._flush_cfg_edges()
         self._flush_dfg_nodes()
         self._flush_dfg_edges()
+        self._flush_symbols()
+        self._flush_aliases()
 
     def finalize(self, *, receipt: Dict) -> None:
         """
@@ -215,6 +248,8 @@ class UcgStore:
             "cfg_edge_rows": self._cfg_edge_rows_total,
             "dfg_node_rows": self._dfg_node_rows_total,
             "dfg_edge_rows": self._dfg_edge_rows_total,
+            "symbol_rows": self._symbol_rows_total,
+            "alias_rows": self._alias_rows_total,
             "bytes_written": self._bytes_written,
             "compression": {"algorithm": "zstd", "level": self.zstd_level},
             "files": {
@@ -225,6 +260,8 @@ class UcgStore:
                 "cfg_edges": self._cfg_edge_file_idx,
                 "dfg_nodes": self._dfg_node_file_idx,
                 "dfg_edges": self._dfg_edge_file_idx,
+                "symbols": self._symbol_file_idx,
+                "aliases": self._alias_file_idx,
             },
             "created_at_epoch": int(time.time()),
             "created_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -315,6 +352,26 @@ class UcgStore:
         self._dfg_edge_file_idx += 1
         self._transaction_log.append(f"wrote_dfg_edges:{path.name}")
         self._dfg_edge_buf.clear()
+
+    def _flush_symbols(self) -> None:
+        if not self._symbol_buf:
+            return
+        path = self._staging / "symbols" / f"{self.file_prefix}_symbols_{self._symbol_file_idx:05}.parquet"
+        rows_written = self._verified_write(self._symbol_buf, path)
+        self._symbol_rows_total += rows_written
+        self._symbol_file_idx += 1
+        self._transaction_log.append(f"wrote_symbols:{path.name}")
+        self._symbol_buf.clear()
+
+    def _flush_aliases(self) -> None:
+        if not self._alias_buf:
+            return
+        path = self._staging / "aliases" / f"{self.file_prefix}_aliases_{self._alias_file_idx:05}.parquet"
+        rows_written = self._verified_write(self._alias_buf, path)
+        self._alias_rows_total += rows_written
+        self._alias_file_idx += 1
+        self._transaction_log.append(f"wrote_aliases:{path.name}")
+        self._alias_buf.clear()
 
     # ----------------------------- internals: write helpers --------------------
 
@@ -421,6 +478,18 @@ class UcgStore:
                     "partitions": ["lang", "kind"],
                     "row_count": self._dfg_edge_rows_total,
                 },
+                "symbols": {
+                    "path": "symbols/*.parquet",
+                    "schema": str(self._symbol_schema),
+                    "partitions": ["lang", "kind"],
+                    "row_count": self._symbol_rows_total,
+                },
+                "aliases": {
+                    "path": "aliases/*.parquet",
+                    "schema": str(self._alias_schema),
+                    "partitions": ["alias_kind"],
+                    "row_count": self._alias_rows_total,
+                },
             }
         }
         (self._staging / "catalog.json").write_text(json.dumps(catalog, indent=2), encoding="utf-8")
@@ -434,6 +503,8 @@ class UcgStore:
             "CREATE TABLE cfg_edges AS SELECT * FROM read_parquet('cfg_edges/*.parquet');",
             "CREATE TABLE dfg_nodes AS SELECT * FROM read_parquet('dfg_nodes/*.parquet');",
             "CREATE TABLE dfg_edges AS SELECT * FROM read_parquet('dfg_edges/*.parquet');",
+            "CREATE TABLE symbols AS SELECT * FROM read_parquet('symbols/*.parquet');",
+            "CREATE TABLE aliases AS SELECT * FROM read_parquet('aliases/*.parquet');",
             "",
             "-- Suggested indexes",
             "CREATE INDEX idx_nodes_kind ON nodes(kind);",
@@ -447,6 +518,11 @@ class UcgStore:
             "CREATE INDEX idx_dfg_nodes_name ON dfg_nodes(name);",
             "CREATE INDEX idx_dfg_edges_src ON dfg_edges(src_id);",
             "CREATE INDEX idx_dfg_edges_dst ON dfg_edges(dst_id);",
+            "CREATE INDEX idx_symbols_scope ON symbols(scope_id);",
+            "CREATE INDEX idx_symbols_name ON symbols(name);",
+            "CREATE INDEX idx_aliases_kind ON aliases(alias_kind);",
+            "CREATE INDEX idx_aliases_alias ON aliases(alias_id);",
+            "CREATE INDEX idx_aliases_tgt ON aliases(target_symbol_id);",
         ]
         (self._staging / "schema.sql").write_text("\n".join(duckdb_sql), encoding="utf-8")
 
@@ -630,6 +706,57 @@ def _dfg_edge_schema() -> pa.schema:
     return schema.with_metadata({"version": SCHEMA_VERSION})
 
 
+def _symbol_schema() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("scope_id", pa.string()),
+        pa.field("name", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("visibility", pa.string()),
+        pa.field("is_dynamic", pa.bool_()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION})
+
+
+def _alias_schema() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("alias_kind", pa.string()),
+        pa.field("alias_id", pa.string()),
+        pa.field("target_symbol_id", pa.string()),
+        pa.field("alias_name", pa.string()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION})
+
+
 def _node_to_arrow_row(n: NodeRow) -> Dict:
     return dict(
         id=n.id,
@@ -786,6 +913,55 @@ def _dfg_edge_to_arrow_row(e: DfgEdgeRow) -> Dict:
         prov_byte_end=int(e.prov.byte_end),
         prov_line_start=int(e.prov.line_start),
         prov_line_end=int(e.prov.line_end),
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def _symbol_to_arrow_row(s: SymbolRow) -> Dict:
+    return dict(
+        id=s.id,
+        scope_id=s.scope_id,
+        name=s.name,
+        kind=s.kind.value if hasattr(s.kind, "value") else str(s.kind),
+        visibility=s.visibility,
+        is_dynamic=bool(s.is_dynamic),
+        path=s.path,
+        lang=getattr(s.lang, "value", str(s.lang)),
+        attrs_json=s.attrs_json,
+        prov_path=s.prov.path,
+        prov_blob_sha=s.prov.blob_sha,
+        prov_lang=getattr(s.prov.lang, "value", str(s.prov.lang)),
+        prov_grammar_sha=s.prov.grammar_sha,
+        prov_run_id=s.prov.run_id,
+        prov_config_hash=s.prov.config_hash,
+        prov_byte_start=int(s.prov.byte_start),
+        prov_byte_end=int(s.prov.byte_end),
+        prov_line_start=int(s.prov.line_start),
+        prov_line_end=int(s.prov.line_end),
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def _alias_to_arrow_row(a: AliasRow) -> Dict:
+    return dict(
+        id=a.id,
+        alias_kind=a.alias_kind.value if hasattr(a.alias_kind, "value") else str(a.alias_kind),
+        alias_id=a.alias_id,
+        target_symbol_id=a.target_symbol_id,
+        alias_name=a.alias_name,
+        path=a.path,
+        lang=getattr(a.lang, "value", str(a.lang)),
+        attrs_json=a.attrs_json,
+        prov_path=a.prov.path,
+        prov_blob_sha=a.prov.blob_sha,
+        prov_lang=getattr(a.prov.lang, "value", str(a.prov.lang)),
+        prov_grammar_sha=a.prov.grammar_sha,
+        prov_run_id=a.prov.run_id,
+        prov_config_hash=a.prov.config_hash,
+        prov_byte_start=int(a.prov.byte_start),
+        prov_byte_end=int(a.prov.byte_end),
+        prov_line_start=int(a.prov.line_start),
+        prov_line_end=int(a.prov.line_end),
         schema_version=SCHEMA_VERSION,
     )
 
