@@ -15,23 +15,21 @@ from .discovery import (
     Severity,
 )
 from .normalize import normalize_parse_stream
-from .cfg import build_cfg
-from .dfg import build_dfg
-from .effects import build_effects
+from .cfg import build_cfg  # optional
+from .dfg import build_dfg  # optional
+from .effects import build_effects  # optional
 from .ucg_store import UcgStore
 # If you added these drivers; otherwise, swap in your actual parser integrations.
 from .python_driver import PythonDriver  # type: ignore
 from .ts_driver import TsDriver          # type: ignore
 
 # CST event types (imported for type hints only; not strictly required here)
-from .parser_registry import ParseStream  # type: ignore
+# from .parser_registry import ParseStream  # type: ignore
 
 
 @dataclass(frozen=True)
 class Step1Config:
-    """
-    Execution knobs for Step 1 orchestration.
-    """
+    """Execution knobs for Step 1 orchestration."""
     zstd_level: int = 7
     roll_rows: int = 2_000_000
     max_store_bytes: Optional[int] = None
@@ -40,6 +38,16 @@ class Step1Config:
     # Whether to compute CFG/DFG (allow disabling during bring-up)
     enable_cfg: bool = True
     enable_dfg: bool = True
+    enable_symbols: bool = True
+    enable_effects: bool = True
+    # Flush cadence (keeps memory bounded)
+    flush_every_n_files: int = 50
+    # Batch sizes for appends
+    node_edge_batch: int = 4096
+    cfg_batch: int = 4096
+    dfg_batch: int = 4096
+    sym_batch: int = 4096
+    eff_batch: int = 4096
 
 
 @dataclass(frozen=True)
@@ -52,15 +60,15 @@ class Step1Summary:
     cfg_edges_rows: int
     dfg_nodes_rows: int
     dfg_edges_rows: int
+    symbols_rows: int
+    aliases_rows: int
+    effects_rows: int
     anomalies: int
     wall_ms: int
 
 
 def _select_driver(lang: Language):
-    """
-    Map Language -> parser driver instance.
-    Extend here for more languages.
-    """
+    """Map Language -> parser driver instance. Extend here for more languages."""
     if lang == Language.PY:
         return PythonDriver()
     if lang in (Language.JS, Language.TS, Language.JSX, Language.TSX):
@@ -70,9 +78,7 @@ def _select_driver(lang: Language):
 
 
 def _parse_file(file: FileMeta):
-    """
-    Produce a ParseStream for a file using the right driver, or an error.
-    """
+    """Produce a parse stream for a file using the right driver, or an error."""
     driver = _select_driver(file.lang)
     if driver is None:
         return None, f"no-driver:{file.lang}"
@@ -92,10 +98,9 @@ def build_ucg_for_files(
 ) -> Step1Summary:
     """
     High-level Step 1 runner:
-      - parses files → normalize → CFG (opt) → DFG (opt) → writes Parquet via UcgStore
-      - captures anomalies and publishes a single atomic output directory
-
-    Returns a Step1Summary with useful counters.
+      - parses files → normalize → CFG (opt) → DFG (opt) → symbols/aliases (opt) → effects (opt)
+      - streams into Parquet via UcgStore
+      - records anomalies and publishes a single atomic output directory
     """
     cfg = cfg or Step1Config()
     start = time.time()
@@ -111,48 +116,68 @@ def build_ucg_for_files(
     files_total = 0
     files_parsed = 0
 
+    # Optional imports (symbols builder may not exist yet in your repo)
+    try:
+        from .symbols import build_symbols  # type: ignore
+    except Exception:
+        build_symbols = None  # type: ignore
+
     # Process files deterministically by (path, blob_sha)
     files_sorted = sorted(list(files), key=lambda f: (f.path, f.blob_sha or ""))
 
-    for fm in files_sorted:
+    # Small append buffers to reduce writer churn
+    node_edge_buf: List[Tuple[str, object]] = []
+    cfg_buf: List[Tuple[str, object]] = []
+    dfg_buf: List[Tuple[str, object]] = []
+    sym_buf: List[Tuple[str, object]] = []
+    eff_buf: List[Tuple[str, object]] = []
+
+    def flush_buffers(force: bool = False) -> None:
+        if force or len(node_edge_buf) >= cfg.node_edge_batch:
+            if node_edge_buf:
+                store.append(node_edge_buf)
+                node_edge_buf.clear()
+        if force or len(cfg_buf) >= cfg.cfg_batch:
+            if cfg_buf:
+                store.append_cfg(cfg_buf)
+                cfg_buf.clear()
+        if force or len(dfg_buf) >= cfg.dfg_batch:
+            if dfg_buf:
+                store.append_dfg(dfg_buf)
+                dfg_buf.clear()
+        if force or len(sym_buf) >= cfg.sym_batch:
+            if sym_buf:
+                store.append_symbols(sym_buf)
+                sym_buf.clear()
+        if force or len(eff_buf) >= cfg.eff_batch:
+            if eff_buf and hasattr(store, "append_effects"):
+                store.append_effects(eff_buf)  # type: ignore[attr-defined]
+                eff_buf.clear()
+
+    for i, fm in enumerate(files_sorted, start=1):
         files_total += 1
 
         # Guards
         if not fm.is_text:
-            sink.emit(
-                Anomaly(
-                    path=fm.path,
-                    blob_sha=fm.blob_sha,
-                    kind=AnomalyKind.SKIPPED,
-                    severity=Severity.INFO,
-                    detail="binary-or-nontext",
-                )
-            )
+            sink.emit(Anomaly(
+                path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.SKIPPED,
+                severity=Severity.INFO, detail="binary-or-nontext",
+            ))
             continue
         if fm.size_bytes is not None and fm.size_bytes > cfg.max_file_bytes:
-            sink.emit(
-                Anomaly(
-                    path=fm.path,
-                    blob_sha=fm.blob_sha,
-                    kind=AnomalyKind.MEMORY_LIMIT,
-                    severity=Severity.ERROR,
-                    detail=f"file-too-large:{fm.size_bytes}",
-                )
-            )
+            sink.emit(Anomaly(
+                path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.MEMORY_LIMIT,
+                severity=Severity.ERROR, detail=f"file-too-large:{fm.size_bytes}",
+            ))
             continue
 
         # Parse
         ps, perr = _parse_file(fm)
         if ps is None:
-            sink.emit(
-                Anomaly(
-                    path=fm.path,
-                    blob_sha=fm.blob_sha,
-                    kind=AnomalyKind.PARSE_FAILED,
-                    severity=Severity.ERROR,
-                    detail=perr or "parse-failed",
-                )
-            )
+            sink.emit(Anomaly(
+                path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
+                severity=Severity.ERROR, detail=f"{perr} path={fm.path} lang={fm.lang}",
+            ))
             continue
 
         files_parsed += 1
@@ -160,72 +185,84 @@ def build_ucg_for_files(
         # Normalize → Nodes/Edges
         try:
             for item in normalize_parse_stream(ps, sink):
-                # item is ("node", NodeRow) or ("edge", EdgeRow)
-                store.append([item])
-        except Exception as e:
-            sink.emit(
-                Anomaly(
-                    path=fm.path,
-                    blob_sha=fm.blob_sha,
-                    kind=AnomalyKind.UNKNOWN,
-                    severity=Severity.ERROR,
-                    detail=f"normalize-exception:{type(e).__name__}:{e}",
-                )
-            )
-
-        # CFG (optional)
-        if cfg.enable_cfg:
-            try:
-                for item in build_cfg(ps, sink):
-                    # item is ("cfg_block", BlockRow) or ("cfg_edge", CfgEdgeRow)
-                    store.append_cfg([item])
-            except Exception as e:
-                sink.emit(
-                    Anomaly(
-                        path=fm.path,
-                        blob_sha=fm.blob_sha,
-                        kind=AnomalyKind.UNKNOWN,
-                        severity=Severity.ERROR,
-                        detail=f"cfg-exception:{type(e).__name__}:{e}",
-                    )
-                )
-
-        # DFG (optional)
-        if cfg.enable_dfg:
-            try:
-                for item in build_dfg(ps, sink):
-                    # item is ("dfg_node", DfgNodeRow) or ("dfg_edge", DfgEdgeRow)
-                    store.append_dfg([item])
-            except Exception as e:
-                sink.emit(
-                    Anomaly(
-                        path=fm.path,
-                        blob_sha=fm.blob_sha,
-                        kind=AnomalyKind.UNKNOWN,
-                        severity=Severity.ERROR,
-                        detail=f"dfg-exception:{type(e).__name__}:{e}",
-                    )
-                )
-
-        # Effects (neutral carriers)
-        try:
-            for item in build_effects(ps, sink):
-                store.append_effects([item])
+                node_edge_buf.append(item)
+                if len(node_edge_buf) >= cfg.node_edge_batch:
+                    flush_buffers()
         except Exception as e:
             sink.emit(Anomaly(
                 path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
-                severity=Severity.ERROR, detail=f"effects-exception:{type(e).__name__}:{e}",
+                severity=Severity.ERROR, detail=f"normalize-exception:{type(e).__name__}:{e}",
             ))
 
-        # Periodically flush (keeps memory bounded on huge repos)
-        if (files_parsed % 50) == 0:
+        # CFG (optional)
+        if cfg.enable_cfg and 'build_cfg' in globals():
+            try:
+                for item in build_cfg(ps, sink):
+                    cfg_buf.append(item)
+                    if len(cfg_buf) >= cfg.cfg_batch:
+                        flush_buffers()
+            except Exception as e:
+                sink.emit(Anomaly(
+                    path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
+                    severity=Severity.ERROR, detail=f"cfg-exception:{type(e).__name__}:{e}",
+                ))
+
+        # DFG (optional)
+        if cfg.enable_dfg and 'build_dfg' in globals():
+            try:
+                for item in build_dfg(ps, sink):
+                    dfg_buf.append(item)
+                    if len(dfg_buf) >= cfg.dfg_batch:
+                        flush_buffers()
+            except Exception as e:
+                sink.emit(Anomaly(
+                    path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
+                    severity=Severity.ERROR, detail=f"dfg-exception:{type(e).__name__}:{e}",
+                ))
+
+        # Symbols/Aliases (optional, only if you've implemented build_symbols)
+        if cfg.enable_symbols and build_symbols is not None:
+            try:
+                for item in build_symbols(ps, sink):  # yields ('symbol', SymbolRow) | ('alias', AliasRow)
+                    sym_buf.append(item)
+                    if len(sym_buf) >= cfg.sym_batch:
+                        flush_buffers()
+            except Exception as e:
+                sink.emit(Anomaly(
+                    path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
+                    severity=Severity.ERROR, detail=f"symbols-exception:{type(e).__name__}:{e}",
+                ))
+
+        # Effects (neutral carriers) — optional if store has append_effects
+        if cfg.enable_effects and 'build_effects' in globals():
+            try:
+                for item in build_effects(ps, sink):
+                    eff_buf.append(item)
+                    if len(eff_buf) >= cfg.eff_batch:
+                        flush_buffers()
+            except Exception as e:
+                sink.emit(Anomaly(
+                    path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
+                    severity=Severity.ERROR, detail=f"effects-exception:{type(e).__name__}:{e}",
+                ))
+
+        # Periodic flush (keeps memory bounded on huge repos)
+        if (i % max(1, cfg.flush_every_n_files)) == 0:
+            flush_buffers(force=True)
             store.flush()
             # push anomalies collected so far
-            store.append_anomalies(sink.drain())
+            try:
+                store.append_anomalies(sink.drain())
+            except Exception:
+                pass
 
     # Final flush + anomalies
+    flush_buffers(force=True)
     store.flush()
-    store.append_anomalies(sink.drain())
+    try:
+        store.append_anomalies(sink.drain())
+    except Exception:
+        pass
 
     # Publish
     store.finalize(
@@ -236,17 +273,21 @@ def build_ucg_for_files(
     )
 
     wall_ms = int((time.time() - start) * 1000)
-    # We can read back counts from receipt, but we tracked major ones via store; for simplicity, return zeros for per-table
-    # (DuckDB catalog has exact numbers; if needed, parse store receipt JSON after finalize.)
-    return Step1Summary(
+
+    # Return real counters from the store (populated during flushes)
+    summary = Step1Summary(
         files_total=files_total,
         files_parsed=files_parsed,
-        nodes_rows=0,
-        edges_rows=0,
-        cfg_blocks_rows=0,
-        cfg_edges_rows=0,
-        dfg_nodes_rows=0,
-        dfg_edges_rows=0,
-        anomalies=0,
+        nodes_rows=getattr(store, "_node_rows_total", 0),
+        edges_rows=getattr(store, "_edge_rows_total", 0),
+        cfg_blocks_rows=getattr(store, "_cfg_block_rows_total", 0),
+        cfg_edges_rows=getattr(store, "_cfg_edge_rows_total", 0),
+        dfg_nodes_rows=getattr(store, "_dfg_node_rows_total", 0),
+        dfg_edges_rows=getattr(store, "_dfg_edge_rows_total", 0),
+        symbols_rows=getattr(store, "_symbol_rows_total", 0),
+        aliases_rows=getattr(store, "_alias_rows_total", 0),
+        effects_rows=getattr(store, "_effect_rows_total", 0),
+        anomalies=len(getattr(sink, "_buffer", []) or []) + sum(v for v in getattr(sink, "_counts", {}).values()) if hasattr(sink, "_counts") else 0,
         wall_ms=wall_ms,
     )
+    return summary
