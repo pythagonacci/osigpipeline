@@ -163,6 +163,9 @@ class _FuncState:
     assign_stack: List[int] = field(default_factory=list)
     # map literal node ids emitted in this assignment to connect const_part edges
     pending_literals: List[str] = field(default_factory=list)
+    # baseline tracking: collected param node ids and names
+    param_nodes: List[Tuple[str, str]] = field(default_factory=list)  # (name, node_id)
+    had_precision: bool = False
 
 
 # ==============================================================================
@@ -216,6 +219,7 @@ class DfgBuilder:
                 path=fm.path, lang=fm.lang, attrs_json=_compact({}), prov=prov(ev),
             )
             yield ("dfg_node", row)
+            func.param_nodes.append((name, nid))
 
         def emit_var_def(name: str, func: _FuncState, ev: CstEvent) -> Iterator[Tuple[str, object]]:
             v = func.versions.get(name, -1) + 1
@@ -362,6 +366,22 @@ class DfgBuilder:
                 if adapter.is_param_list(ev.type):
                     func.in_params = False
                 if adapter.is_function(ev.type):
+                    # Baseline: ensure at least PARAM -> RETURN MAY_FLOW
+                    if func.param_nodes:
+                        # Create a synthetic RETURN node at function end span
+                        ret_id = node_id(DfgNodeKind.VAR_USE, func.func_id, "__return__", None, ev)
+                        ret_row = DfgNodeRow(
+                            id=ret_id, func_id=func.func_id, kind=DfgNodeKind.VAR_USE, name="__return__", version=None,
+                            path=fm.path, lang=fm.lang, attrs_json=_compact({"baseline": True}), prov=prov(ev),
+                        )
+                        yield ("dfg_node", ret_row)
+                        for name, pid in func.param_nodes:
+                            eid = edge_id(DfgEdgeKind.ARG_TO_PARAM, func.func_id, pid, ret_id, ev)
+                            er = DfgEdgeRow(
+                                id=eid, func_id=func.func_id, kind=DfgEdgeKind.ARG_TO_PARAM, src_id=pid, dst_id=ret_id,
+                                path=fm.path, lang=fm.lang, attrs_json=_compact({"baseline": True}), prov=prov(ev),
+                            )
+                            yield ("dfg_edge", er)
                     func_stack.pop()
                 # close assignment expression scope if EXIT matches last assignment ENTER (best-effort)
                 if adapter.is_assign(ev.type) and func.assign_stack:

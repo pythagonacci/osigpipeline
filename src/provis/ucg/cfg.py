@@ -166,6 +166,8 @@ class _FuncState:
     block_count: int
     # stack of open control constructs: (kind, predicate_block_id, true_target_id?, false_target_id?)
     ctrl_stack: List[Tuple[str, str]] = field(default_factory=list)
+    # whether we emitted any precise (non-baseline) structure inside the function
+    had_precision: bool = False
 
 
 class CfgBuilder:
@@ -293,6 +295,7 @@ class CfgBuilder:
                     func.current_block_id = b_pred.id
                     # push control marker (use node type as tag)
                     func.ctrl_stack.append((ev.type, b_pred.id))
+                    func.had_precision = True
                 # Return/throw immediately ends current block and connects to EXIT
                 elif adapter.is_return(ev.type):
                     b_body = block_row(func, BlockKind.BODY, ev, {"type": ev.type})
@@ -303,6 +306,7 @@ class CfgBuilder:
                     yield ("cfg_block", b_exit)
                     yield ("cfg_edge", edge_row(func, CfgEdgeKind.RETURN, b_body.id, b_exit.id, ev, {}))
                     func.current_block_id = b_exit.id
+                    func.had_precision = True
                 elif adapter.is_throw(ev.type):
                     b_body = block_row(func, BlockKind.BODY, ev, {"type": ev.type})
                     yield ("cfg_edge", edge_row(func, CfgEdgeKind.NEXT, func.current_block_id, b_body.id, ev, {}))
@@ -312,6 +316,7 @@ class CfgBuilder:
                     yield ("cfg_block", b_exit)
                     yield ("cfg_edge", edge_row(func, CfgEdgeKind.EXCEPTION, b_body.id, b_exit.id, ev, {}))
                     func.current_block_id = b_exit.id
+                    func.had_precision = True
                 else:
                     # Regular statement entry: keep building within current BODY; split on statements if needed.
                     pass
@@ -329,6 +334,20 @@ class CfgBuilder:
                     yield ("cfg_block", b_exit)
                     if func.current_block_id != b_exit.id:
                         yield ("cfg_edge", edge_row(func, CfgEdgeKind.NEXT, func.current_block_id, b_exit.id, ev, {}))
+
+                    # Baseline warning if no precise structure observed
+                    if not func.had_precision:
+                        try:
+                            sink.emit(Anomaly(
+                                path=fm.path,
+                                blob_sha=fm.blob_sha,
+                                kind=AnomalyKind.UNKNOWN,
+                                severity=Severity.WARN,
+                                detail=f"CFG_BASELINE_ONLY for function {func.func_id}",
+                                span=(ev.byte_start, ev.byte_end),
+                            ))
+                        except Exception:
+                            pass
                     func_stack.pop()
                     continue
 
@@ -408,6 +427,7 @@ class CfgBuilder:
                     yield ("cfg_block", b_after)
                     yield ("cfg_edge", edge_row(func, CfgEdgeKind.NEXT, b_handler.id, b_after.id, ev, {}))
                     func.current_block_id = b_after.id
+                    func.had_precision = True
 
         # If a function never closed (malformed), synthesize an EXIT
         while func_stack:

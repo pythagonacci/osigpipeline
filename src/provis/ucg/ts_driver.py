@@ -386,19 +386,56 @@ class TSTreeSitterDriver(ParserDriver):
             )
 
         lang_obj, grammar_name, version = loaded
+        # Some wheels expose grammars as PyCapsule; wrap into tree_sitter.Language if needed.
+        try:
+            import tree_sitter as _ts  # type: ignore
+            def _is_language_like(obj) -> bool:
+                return hasattr(obj, "copy") and hasattr(obj, "query") and hasattr(obj, "name")
+            if not _is_language_like(lang_obj):
+                try:
+                    lang_obj = _ts.Language(lang_obj)  # type: ignore[arg-type]
+                except Exception:
+                    # keep original; assignment path below will fail clearly if incompatible
+                    pass
+        except Exception:
+            # If tree_sitter import fails here, we'll surface during set_language below
+            pass
+
         grammar_sha = hashlib.blake2b(
             f"{grammar_name}:{version}".encode("utf-8"), digest_size=20
         ).hexdigest()
 
         self._parser = TSParser()  # type: ignore[call-arg]
         try:
-            # canonical API
-            self._parser.set_language(lang_obj)  # type: ignore[attr-defined]
+            # Support both modern and legacy APIs:
+            #  - Modern: set_language(Language)
+            #  - Legacy: parser.language = Language
+            set_lang = getattr(self._parser, "set_language", None)
+            if callable(set_lang):
+                self._parser.set_language(lang_obj)  # type: ignore[attr-defined]
+            elif hasattr(self._parser, "language"):
+                try:
+                    setattr(self._parser, "language", lang_obj)
+                except Exception as e:
+                    raise ParserError(
+                        code="PARSER_INIT_FAILED",
+                        message="Failed to set Tree-sitter language via language property",
+                        detail=str(e),
+                    )
+            else:
+                raise ParserError(
+                    code="PARSER_INIT_FAILED",
+                    message="Tree-sitter Parser missing set_language and language attribute",
+                    detail=f"Parser attrs: {dir(self._parser)}",
+                )
+        except ParserError:
+            self._parser = None
+            raise
         except Exception as e:
             self._parser = None
             raise ParserError(
                 code="PARSER_INIT_FAILED",
-                message="Failed to set Tree-sitter language via set_language",
+                message="Failed to configure Tree-sitter language",
                 detail=str(e),
             )
 

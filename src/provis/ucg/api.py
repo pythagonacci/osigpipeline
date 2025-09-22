@@ -182,6 +182,18 @@ def build_ucg_for_files(
 
         files_parsed += 1
 
+        # Ensure parse events are reusable across phases
+        try:
+            if ps.events is not None and not isinstance(ps.events, list):
+                ps = type(ps)(file=ps.file, info=ps.driver, error=ps.error, events=list(ps.events), ok=ps.ok)  # type: ignore
+        except Exception:
+            # Fallback: best-effort materialization
+            try:
+                evs = list(ps.events) if ps.events is not None else None
+                ps.events = evs  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
         # Normalize → Nodes/Edges
         try:
             for item in normalize_parse_stream(ps, sink):
@@ -194,52 +206,80 @@ def build_ucg_for_files(
                 severity=Severity.ERROR, detail=f"normalize-exception:{type(e).__name__}:{e}",
             ))
 
-        # CFG (optional)
+        # CFG (optional) — re-parse for fresh events
         if cfg.enable_cfg and 'build_cfg' in globals():
             try:
-                for item in build_cfg(ps, sink):
-                    cfg_buf.append(item)
-                    if len(cfg_buf) >= cfg.cfg_batch:
-                        flush_buffers()
+                ps_cfg, perr_cfg = _parse_file(fm)
+                if ps_cfg is not None:
+                    for item in build_cfg(ps_cfg, sink):
+                        cfg_buf.append(item)
+                        if len(cfg_buf) >= cfg.cfg_batch:
+                            flush_buffers()
+                else:
+                    sink.emit(Anomaly(
+                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
+                        severity=Severity.ERROR, detail=f"{perr_cfg} (cfg) path={fm.path} lang={fm.lang}",
+                    ))
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
                     severity=Severity.ERROR, detail=f"cfg-exception:{type(e).__name__}:{e}",
                 ))
 
-        # DFG (optional)
+        # DFG (optional) — re-parse for fresh events
         if cfg.enable_dfg and 'build_dfg' in globals():
             try:
-                for item in build_dfg(ps, sink):
-                    dfg_buf.append(item)
-                    if len(dfg_buf) >= cfg.dfg_batch:
-                        flush_buffers()
+                ps_dfg, perr_dfg = _parse_file(fm)
+                if ps_dfg is not None:
+                    for item in build_dfg(ps_dfg, sink):
+                        dfg_buf.append(item)
+                        if len(dfg_buf) >= cfg.dfg_batch:
+                            flush_buffers()
+                else:
+                    sink.emit(Anomaly(
+                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
+                        severity=Severity.ERROR, detail=f"{perr_dfg} (dfg) path={fm.path} lang={fm.lang}",
+                    ))
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
                     severity=Severity.ERROR, detail=f"dfg-exception:{type(e).__name__}:{e}",
                 ))
 
-        # Symbols/Aliases (optional, only if you've implemented build_symbols)
+        # Symbols/Aliases (optional) — re-parse for fresh events
         if cfg.enable_symbols and build_symbols is not None:
             try:
-                for item in build_symbols(ps, sink):  # yields ('symbol', SymbolRow) | ('alias', AliasRow)
-                    sym_buf.append(item)
-                    if len(sym_buf) >= cfg.sym_batch:
-                        flush_buffers()
+                ps_sym, perr_sym = _parse_file(fm)
+                if ps_sym is not None:
+                    for item in build_symbols(ps_sym, sink):  # yields ('symbol', SymbolRow) | ('alias', AliasRow)
+                        sym_buf.append(item)
+                        if len(sym_buf) >= cfg.sym_batch:
+                            flush_buffers()
+                else:
+                    sink.emit(Anomaly(
+                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
+                        severity=Severity.ERROR, detail=f"{perr_sym} (symbols) path={fm.path} lang={fm.lang}",
+                    ))
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
                     severity=Severity.ERROR, detail=f"symbols-exception:{type(e).__name__}:{e}",
                 ))
 
-        # Effects (neutral carriers) — optional if store has append_effects
+        # Effects (neutral carriers) — re-parse for fresh events
         if cfg.enable_effects and 'build_effects' in globals():
             try:
-                for item in build_effects(ps, sink):
-                    eff_buf.append(item)
-                    if len(eff_buf) >= cfg.eff_batch:
-                        flush_buffers()
+                ps_eff, perr_eff = _parse_file(fm)
+                if ps_eff is not None:
+                    for item in build_effects(ps_eff, sink):
+                        eff_buf.append(item)
+                        if len(eff_buf) >= cfg.eff_batch:
+                            flush_buffers()
+                else:
+                    sink.emit(Anomaly(
+                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
+                        severity=Severity.ERROR, detail=f"{perr_eff} (effects) path={fm.path} lang={fm.lang}",
+                    ))
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,

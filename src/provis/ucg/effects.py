@@ -111,6 +111,9 @@ def build_effects(ps: ParseStream, sink: AnomalySink, cfg: Optional[EffectsConfi
     pending_callee: Optional[Tuple[str, CstEvent]] = None  # (carrier, at_event)
     expecting_call_paren: bool = False
 
+    # simple per-file stats for WARNs
+    stats = {"total": 0, "t0_or_t1": False}
+
     for ev in ps.events:
         # Maintain a token window for heuristics
         if ev.kind == CstEventKind.TOKEN:
@@ -120,35 +123,50 @@ def build_effects(ps: ParseStream, sink: AnomalySink, cfg: Optional[EffectsConfi
 
         # Language-specific cues
         if lang == Language.PY:
-            yield from _py_effects_step(ev, fm, info, token_window, cfg, sink,
-                                        state=(lambda: (pending_callee, expecting_call_paren),
-                                               lambda a, b: (globals().__setitem__("_pc", a), globals().__setitem__("_ecp", b))))
+            for item in _py_effects_step(ev, fm, info, token_window, cfg, sink,
+                                         state=(lambda: (pending_callee, expecting_call_paren),
+                                                lambda a, b: (globals().__setitem__("_pc", a), globals().__setitem__("_ecp", b))),
+                                         stats=stats):
+                yield item
             # sync back quick state (avoid capturing by ref across yields)
             if "_pc" in globals(): pending_callee = globals().pop("_pc")
             if "_ecp" in globals(): expecting_call_paren = globals().pop("_ecp")
         else:
-            yield from _js_effects_step(ev, fm, info, token_window, cfg, sink,
-                                        state=(lambda: (pending_callee, expecting_call_paren),
-                                               lambda a, b: (globals().__setitem__("_pc", a), globals().__setitem__("_ecp", b))))
+            for item in _js_effects_step(ev, fm, info, token_window, cfg, sink,
+                                         state=(lambda: (pending_callee, expecting_call_paren),
+                                                lambda a, b: (globals().__setitem__("_pc", a), globals().__setitem__("_ecp", b))),
+                                         stats=stats):
+                yield item
             if "_pc" in globals(): pending_callee = globals().pop("_pc")
             if "_ecp" in globals(): expecting_call_paren = globals().pop("_ecp")
 
         # Generic throw/raise detection (EXIT makes spans sane)
         if ev.kind == CstEventKind.EXIT and _is_throw_like(lang, ev.type):
             carrier = "raise" if lang == Language.PY else "throw"
-            yield ("effect", _mk_effect(cfg, fm, info, EffectKind.THROW_LIKE, carrier, {}, ev, {"node_type": ev.type}))
+            row = _mk_effect(cfg, fm, info, EffectKind.THROW_LIKE, carrier, {}, ev, {"node_type": ev.type, "tier": 0})
+            stats["total"] += 1; stats["t0_or_t1"] = True
+            yield ("effect", row)
 
         # Capture string literals (as standalone carriers) to help SCM/Step 3 normalize paths/SQL
         if cfg.capture_string_literals and ev.kind == CstEventKind.TOKEN and _looks_string_token(lang, ev.type):
             lit = _safe_literal(fm, ev, max_len=cfg.max_literal_len)
             if lit:
-                attrs = {"token_type": ev.type}
+                attrs = {"token_type": ev.type, "tier": 2, "baseline": True}
                 ek = EffectKind.STRING_LITERAL
                 if cfg.enable_sql_heuristic and _looks_sql(lit):
                     ek = EffectKind.SQL_LIKE
                 elif cfg.enable_route_heuristic and _looks_route(lit):
                     ek = EffectKind.ROUTE_LIKE
-                yield ("effect", _mk_effect(cfg, fm, info, ek, "__string__", {"value": lit}, ev, attrs))
+                row = _mk_effect(cfg, fm, info, ek, "__string__", {"value": lit}, ev, attrs)
+                stats["total"] += 1
+                yield ("effect", row)
+
+    # Emit WARN if only Tier-2 produced
+    try:
+        if stats["total"] > 0 and not stats["t0_or_t1"]:
+            sink.emit(Anomaly(path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN, severity=Severity.WARN, detail="EFFECTS_TIER2_ONLY"))
+    except Exception:
+        pass
 
 
 # ==============================================================================
@@ -163,6 +181,7 @@ def _py_effects_step(
     cfg: EffectsConfig,
     sink: AnomalySink,
     state: Tuple[callable, callable],  # (get_state, set_state)
+    stats: Dict,
 ) -> Iterator[Tuple[str, EffectRow]]:
     get_state, set_state = state
     pending_callee, expecting_call_paren = get_state()
@@ -171,7 +190,9 @@ def _py_effects_step(
     if ev.kind == CstEventKind.EXIT and ev.type in {"Decorator", "decorator"}:
         carrier = _qualified_from_window(fm, token_window)
         if carrier:
-            yield ("effect", _mk_effect(cfg, fm, info, EffectKind.DECORATOR, carrier, _args_from_window(fm, token_window), ev, {"lang": "py"}))
+            row = _mk_effect(cfg, fm, info, EffectKind.DECORATOR, carrier, _args_from_window(fm, token_window), ev, {"lang": "py", "tier": 0})
+            stats["total"] += 1; stats["t0_or_t1"] = True
+            yield ("effect", row)
         return
 
     # Function/Call: libcst/ast typically emits "Call" node with child "(" tokens; we do a simpler heuristic:
@@ -193,7 +214,10 @@ def _py_effects_step(
             # Special env lookups
             if carrier in {"os.getenv", "os.environ.get"}:
                 kind = EffectKind.ENV_LOOKUP
-            yield ("effect", _mk_effect(cfg, fm, info, kind, carrier, _args_from_window(fm, token_window), ev, attrs))
+                attrs["tier"] = 0
+            row = _mk_effect(cfg, fm, info, kind, carrier, _args_from_window(fm, token_window), ev, attrs)
+            stats["total"] += 1; stats["t0_or_t1"] = True
+            yield ("effect", row)
         pending_callee, expecting_call_paren = None, False
         set_state(pending_callee, expecting_call_paren)
         return
@@ -202,7 +226,9 @@ def _py_effects_step(
     if ev.kind == CstEventKind.TOKEN and ev.type == "Name":
         q = _qualified_from_window(fm, token_window)
         if q and q.startswith("os.environ"):
-            yield ("effect", _mk_effect(cfg, fm, info, EffectKind.ENV_LOOKUP, "os.environ", {}, ev, {}))
+            row = _mk_effect(cfg, fm, info, EffectKind.ENV_LOOKUP, "os.environ", {}, ev, {"tier": 1})
+            stats["total"] += 1; stats["t0_or_t1"] = True
+            yield ("effect", row)
 
 
 # ==============================================================================
@@ -217,6 +243,7 @@ def _js_effects_step(
     cfg: EffectsConfig,
     sink: AnomalySink,
     state: Tuple[callable, callable],
+    stats: Dict,
 ) -> Iterator[Tuple[str, EffectRow]]:
     get_state, set_state = state
     pending_callee, expecting_call_paren = get_state()
@@ -225,7 +252,11 @@ def _js_effects_step(
     if ev.kind == CstEventKind.EXIT and ev.type in {"decorator", "legacy_decorator"}:
         carrier = _qualified_from_window(fm, token_window)
         if carrier:
-            yield ("effect", _mk_effect(cfg, fm, info, EffectKind.DECORATOR, carrier, _args_from_window(fm, token_window), ev, {"lang": "js"}))
+            # Angular decorators Tier-0
+            attrs = {"lang": "js", "tier": 0}
+            row = _mk_effect(cfg, fm, info, EffectKind.DECORATOR, carrier, _args_from_window(fm, token_window), ev, attrs)
+            stats["total"] += 1; stats["t0_or_t1"] = True
+            yield ("effect", row)
         return
 
     if ev.kind == CstEventKind.TOKEN and ev.type in {"identifier", "shorthand_property_identifier", "property_identifier"}:
@@ -245,7 +276,16 @@ def _js_effects_step(
             if carrier.startswith("process.env"):
                 kind = EffectKind.ENV_LOOKUP
                 carrier = "process.env"
-            yield ("effect", _mk_effect(cfg, fm, info, kind, carrier, _args_from_window(fm, token_window), ev, attrs))
+                attrs["tier"] = 0
+            # Router arrays / HttpClient recognizers (Tier-0/1)
+            if carrier.endswith("RouterModule.forRoot") or carrier.endswith("RouterModule.forChild"):
+                attrs["tier"] = 0
+            if ".get" in carrier or ".post" in carrier or carrier.endswith("fetch") or "HttpClient." in carrier:
+                # exact HTTP-like call
+                attrs.setdefault("tier", 0)
+            row = _mk_effect(cfg, fm, info, kind, carrier, _args_from_window(fm, token_window), ev, attrs)
+            stats["total"] += 1; stats["t0_or_t1"] = True
+            yield ("effect", row)
         pending_callee, expecting_call_paren = None, False
         set_state(pending_callee, expecting_call_paren)
         return
