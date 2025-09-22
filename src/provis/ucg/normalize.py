@@ -340,12 +340,20 @@ class Normalizer:
                     module_emitted = True
 
                 if nkind in (NodeKind.CLASS, NodeKind.FUNCTION):
-                    node_id = self._start_based_node_id(fm, nkind, ev.byte_start)
-                    parent_id = scope_stack[-1].node_id if scope_stack else (file_id if module_emitted else file_id)
-                    # Use the name from cur if we captured it from pending token
-                    scope = _Scope(node_id=node_id, kind=nkind, name=cur.name, parent_id=parent_id, byte_start=ev.byte_start)
-                    scope_stack.append(scope)
-                    pending_scopes[ev.byte_start] = scope
+                    # Extra guard: only open scopes for true decl nodes (prevents keyword-leaf scopes)
+                    is_real_decl = (
+                        (nkind == NodeKind.FUNCTION and ev.type in adapter.function_types) or
+                        (nkind == NodeKind.CLASS and ev.type in adapter.class_types)
+                    )
+                    if is_real_decl:
+                        node_id = self._start_based_node_id(fm, nkind, ev.byte_start)
+                        parent_id = scope_stack[-1].node_id if scope_stack else file_id
+                        scope = _Scope(node_id=node_id, kind=nkind, name=cur.name, parent_id=parent_id, byte_start=ev.byte_start)
+                        scope_stack.append(scope)
+                        pending_scopes[ev.byte_start] = scope
+                    else:
+                        # Demote misclassified construct to a non-scope BLOCK to avoid duplicates
+                        cur.kind = NodeKind.BLOCK
 
                 # call placeholder (we'll emit CALL edge at EXIT)
                 if adapter.is_call(ev.type):
@@ -361,50 +369,97 @@ class Normalizer:
                         pending_name_token = None
 
             elif ev.kind == CstEventKind.EXIT:
-                # Find corresponding pending construct (should match top)
                 if not pend_stack:
                     continue
                 cur = pend_stack.pop()
-                
-                # Final attempt to set a name for functions/classes if we still don't have one
+
+                # Final attempt to set a name for functions/classes if still unknown
                 if cur.kind in (NodeKind.FUNCTION, NodeKind.CLASS) and not cur.name:
-                    # Walk backwards through recent tokens for the last identifier
                     tw = list(self._token_window)[-12:]
                     for t in reversed(tw):
-                        # Check if this token is within the function/class span
                         if t.byte_start >= cur.byte_start and t.byte_start <= ev.byte_end:
                             if self._token_is_identifier(t, fm.lang):
                                 name = self._safe_token_name(t, fm)
-                                if name and not name.startswith('_') or name.startswith('__'):
-                                    # Avoid internal names unless they're special like __init__
+                                # Allow normal names, and double-underscore specials; avoid single-underscore privates
+                                if name and (not name.startswith("_") or name.startswith("__")):
                                     cur.name = name
                                     break
 
-                # If this EXIT closes an active scope, finalize it now
-                maybe_scope = pending_scopes.pop(cur.byte_start, None)
-                if maybe_scope is not None:
-                    # Update scope name if we found one
-                    if cur.name and not maybe_scope.name:
-                        maybe_scope.name = cur.name
-                    
-                    # Emit the node for the scope with full provenance (end bytes)
-                    nrow = self._node_row_with_start_id(
-                        fm, info, maybe_scope.kind, maybe_scope.node_id, name=maybe_scope.name, ev=ev, extra={"type": cur.type_name}
-                    )
-                    yield ("node", nrow)
-                    # Emit defines edge from parent to this node
-                    parent_id = maybe_scope.parent_id or file_id
-                    erow = self._edge_row(fm, info, EdgeKind.DEFINES, src_id=parent_id, dst_id=maybe_scope.node_id, ev=ev, extra={})
-                    yield ("edge", erow)
-                    # pop from scope stack (must match)
-                    if scope_stack and scope_stack[-1].byte_start == maybe_scope.byte_start:
-                        scope_stack.pop()
+                # If this EXIT should close a scope, do so robustly
+                if cur.kind in (NodeKind.MODULE, NodeKind.CLASS, NodeKind.FUNCTION):
+                    # Update the *active* scope name if it matches this construct start
+                    if scope_stack and scope_stack[-1].byte_start == cur.byte_start:
+                        if cur.name and not scope_stack[-1].name:
+                            scope_stack[-1].name = cur.name
+                        # Normal fast-path finalization (top matches)
+                        for item in self._finalize_scope_at_index(
+                            len(scope_stack) - 1,
+                            scope_stack=scope_stack,
+                            fm=fm,
+                            info=info,
+                            ev=ev,
+                            extra_type=cur.type_name,
+                            file_id=file_id,
+                        ):
+                            yield item
+                    else:
+                        # Slow-path: search for a scope that started at this construct's byte_start
+                        match_idx = -1
+                        for i in range(len(scope_stack) - 1, -1, -1):
+                            if scope_stack[i].byte_start == cur.byte_start:
+                                match_idx = i
+                                break
+
+                        if match_idx != -1:
+                            # Carry over the discovered name if we have one
+                            if cur.name and not scope_stack[match_idx].name:
+                                scope_stack[match_idx].name = cur.name
+                            for item in self._finalize_scope_at_index(
+                                match_idx,
+                                scope_stack=scope_stack,
+                                fm=fm,
+                                info=info,
+                                ev=ev,
+                                extra_type=cur.type_name,
+                                file_id=file_id,
+                            ):
+                                yield item
+                        else:
+                            # Extremely rare with a balanced driver: no matching scope by start.
+                            # Close the top scope to avoid orphans and log an anomaly.
+                            if scope_stack:
+                                top = scope_stack[-1]
+                                sink.emit(
+                                    Anomaly(
+                                        path=fm.path,
+                                        blob_sha=fm.blob_sha,
+                                        kind=AnomalyKind.UNKNOWN,
+                                        severity=Severity.WARN,
+                                        detail=(
+                                            f"Out-of-order scope EXIT for {cur.type_name} at {cur.byte_start}; "
+                                            f"closing top scope started at {top.byte_start}"
+                                        ),
+                                        span=(ev.byte_start, ev.byte_end),
+                                    )
+                                )
+                                for item in self._finalize_scope_at_index(
+                                    len(scope_stack) - 1,
+                                    scope_stack=scope_stack,
+                                    fm=fm,
+                                    info=info,
+                                    ev=ev,
+                                    extra_type=cur.type_name,
+                                    file_id=file_id,
+                                ):
+                                    yield item
 
                 # Effect carriers
                 if cur.kind == NodeKind.EFFECT_CARRIER and self.cfg.emit_effect_carriers:
-                    nrow = self._node_row_with_start_id(fm, info, NodeKind.EFFECT_CARRIER,
-                                                        self._start_based_node_id(fm, NodeKind.EFFECT_CARRIER, cur.byte_start),
-                                                        name=cur.name, ev=ev, extra={"type": cur.type_name, **cur.extra})
+                    nrow = self._node_row_with_start_id(
+                        fm, info, NodeKind.EFFECT_CARRIER,
+                        self._start_based_node_id(fm, NodeKind.EFFECT_CARRIER, cur.byte_start),
+                        name=cur.name, ev=ev, extra={"type": cur.type_name, **cur.extra}
+                    )
                     yield ("node", nrow)
                     if scope_stack:
                         erow = self._edge_row(fm, info, EdgeKind.DECORATES, src_id=nrow.id, dst_id=scope_stack[-1].node_id, ev=ev, extra={})
@@ -422,7 +477,6 @@ class Normalizer:
 
                 # Calls
                 if cur.extra.get("call_like") == "1":
-                    # Try to extract a qualified name from the sliding window (best-effort)
                     qname = self._extract_qualified_name(list(self._token_window)[-8:], fm)
                     callee = qname or cur.name or "<unknown>"
                     sym = self._create_symbol_node(fm, info, callee, ev, "callee")
@@ -507,16 +561,14 @@ class Normalizer:
             if adapter.is_module(node_type):
                 return NodeKind.MODULE, True
 
-            # Class (libCST / TS) - explicit variants
-            if adapter.is_class(node_type) or node_type in {"ClassDef", "class_declaration", "class"}:
+            # Class (libCST / TS) - explicit variants (no bare 'class' keyword)
+            if adapter.is_class(node_type) or node_type in {"ClassDef", "class_declaration"}:
                 return NodeKind.CLASS, True
 
-            # Function / Method / Arrow / Async across languages - explicit variants
+            # Function / Method / Arrow / Async across languages (no bare 'function' keyword)
             if adapter.is_function(node_type) or node_type in {
                 "FunctionDef", "AsyncFunctionDef",              # Python
-                "function_declaration", "method_definition",    # JS/TS
-                "generator_function_declaration",
-                "function", "arrow_function", "function_signature",
+                "generator_function_declaration",               # if present
             }:
                 return NodeKind.FUNCTION, True
 
@@ -687,6 +739,33 @@ class Normalizer:
             return token_text
         except Exception:
             return None
+
+    def _finalize_scope_at_index(
+        self,
+        idx: int,
+        *,
+        scope_stack: List[_Scope],
+        fm: FileMeta,
+        info: Optional[DriverInfo],
+        ev: CstEvent,
+        extra_type: str,
+        file_id: str,
+    ) -> Iterator[tuple[str, object]]:
+        """Emit node+edge for the scope at scope_stack[idx] and pop it."""
+        scope = scope_stack[idx]
+
+        # Emit the scope node (start-id preserved) with current EXIT span
+        nrow = self._node_row_with_start_id(
+            fm, info, scope.kind, scope.node_id, name=scope.name, ev=ev, extra={"type": extra_type}
+        )
+        yield ("node", nrow)
+
+        parent_id = scope.parent_id or file_id
+        erow = self._edge_row(fm, info, EdgeKind.DEFINES, src_id=parent_id, dst_id=scope.node_id, ev=ev, extra={})
+        yield ("edge", erow)
+
+        # Pop exactly this scope (and only this one)
+        scope_stack.pop(idx)
 
     def _emit_synthetic_scope_end(
         self, scope: _Scope, current_ev: CstEvent, fm: FileMeta, info: Optional[DriverInfo]
