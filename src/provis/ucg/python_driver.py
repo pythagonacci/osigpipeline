@@ -228,6 +228,35 @@ class PythonLibCstDriver(ParserDriver):
                         is_leaf = False
                         break
 
+                # Special case: emit identifier tokens for function/class names
+                if isinstance(node, (cst.FunctionDef, cst.ClassDef)):
+                    # Emit a TOKEN event for the name
+                    name_node = node.name if hasattr(node, 'name') else None
+                    if name_node:
+                        # Use the function/class node's position for the name token
+                        try:
+                            rng: CodeRange = positions[node]
+                            b_start = indexer.to_byte_offset(rng.start.line, rng.start.column)
+                            b_end = indexer.to_byte_offset(rng.end.line, rng.end.column)
+                            line_start = rng.start.line
+                            line_end = rng.end.line
+                        except Exception:
+                            # Fallback to file start
+                            b_start = 0
+                            b_end = len(text)
+                            line_start = 1
+                            line_end = len(text.splitlines())
+
+                        token_event = CstEvent(
+                            kind=CstEventKind.TOKEN,
+                            type="Name",
+                            byte_start=b_start,
+                            byte_end=b_end,
+                            line_start=line_start,
+                            line_end=line_end,
+                        )
+                        yield token_event
+
                 if is_leaf:
                     yield _emit_for_node(node, CstEventKind.TOKEN)
                     # Schedule EXIT

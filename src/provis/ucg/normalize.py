@@ -16,6 +16,18 @@ from .parser_registry import (
     ParseStream,
 )
 
+# --- Identifier normalization constants ----------------------------------------
+
+_ID_TOKENS_BY_LANG = {
+    Language.PY: {"Name", "Identifier", "Attribute"},
+    Language.JS: {"identifier", "property_identifier", "private_identifier"},
+    Language.TS: {"identifier", "property_identifier", "private_identifier"},
+    Language.JSX: {"identifier", "property_identifier", "private_identifier"},
+    Language.TSX: {"identifier", "property_identifier", "private_identifier"},
+}
+
+_DECL_HEAD_STOP_TOKENS = {"(", ":", "{", "=>"}  # language-agnostic enough
+
 # ==============================================================================
 # UCG schema (row-oriented; persisted by ucg_store.py)
 # ==============================================================================
@@ -244,6 +256,19 @@ class Normalizer:
             # maintain small token window for qualified-name heuristics
             if ev.kind == CstEventKind.TOKEN:
                 self._token_window.append(ev)
+                
+                # --- NEW: attempt declaration head name capture --------------------------
+                if pend_stack:
+                    cur = pend_stack[-1]
+                    # Identify the next token type (if any) without consuming the stream.
+                    next_tok_type = None
+                    if len(self._token_window) >= 2:
+                        nxt = self._token_window[-1]   # current
+                        # try to infer the "next" token by peeking an adapter-specific hint from the driver
+                        # Many drivers won't provide it synchronously—fallback to None, which we allow
+                    # If the token itself is identifier-like, try to capture
+                    self._maybe_capture_decl_name(fm.lang, cur, ev, next_token_type=next_tok_type)
+                # -------------------------------------------------------------------------
 
             nkind, will_emit = self._safe_classify(adapter, ev.type, ev, sink, fm)
 
@@ -316,6 +341,24 @@ class Normalizer:
                 if not pend_stack:
                     continue
                 cur = pend_stack.pop()
+                
+                # --- NEW: final attempt to set a name for functions/classes -------------
+                if cur.kind in (NodeKind.FUNCTION, NodeKind.CLASS) and not cur.name:
+                    # Walk backwards for the last identifier before a head delimiter
+                    tw = list(self._token_window)[-12:]
+                    ident = None
+                    saw_head_stop = False
+                    for t in reversed(tw):
+                        tt = getattr(t, "type", None) or getattr(t, "token_type", None)
+                        if tt in _DECL_HEAD_STOP_TOKENS:
+                            saw_head_stop = True
+                            continue
+                        if self._token_is_identifier(t, fm.lang) and (saw_head_stop or fm.lang is Language.PY):
+                            ident = self._token_text(t)
+                            break
+                    if ident:
+                        cur.name = ident
+                # -----------------------------------------------------------------------
 
                 # If this EXIT closes an active scope, finalize it now
                 maybe_scope = pending_scopes.pop(cur.byte_start, None)
@@ -381,6 +424,51 @@ class Normalizer:
         adapter = _ADAPTERS.get(lang, _Adapter(lang))
         return adapter.is_identifier_token(ev.type)
 
+    def _token_is_identifier(self, ev: CstEvent, lang: Language) -> bool:
+        """Check if a token event represents an identifier in the given language."""
+        # Some drivers set ev.type, some set ev.token_type; normalize
+        t = getattr(ev, "type", None) or getattr(ev, "token_type", None)
+        if not t:
+            return False
+        return t in _ID_TOKENS_BY_LANG.get(lang, set())
+
+    def _token_text(self, ev: CstEvent) -> Optional[str]:
+        """Extract text content from a token event."""
+        # Prefer 'text' then 'value', finally 'lexeme'; drivers vary
+        for attr in ("text", "value", "lexeme"):
+            v = getattr(ev, attr, None)
+            if isinstance(v, str) and v.strip():
+                return v
+        return None
+
+    def _maybe_capture_decl_name(
+        self,
+        lang: Language,
+        cur: _PendingConstruct,
+        ev: CstEvent,
+        next_token_type: Optional[str] = None,
+    ) -> None:
+        """
+        If we are inside the *head* of a declaration (function/class) and the current
+        token looks like an identifier with a plausible next token ( '(' or ':' or '{' ),
+        assign the name to the pending construct (only once).
+        """
+        if cur.kind not in (NodeKind.FUNCTION, NodeKind.CLASS):
+            return
+        if cur.name:  # already captured
+            return
+
+        if not self._token_is_identifier(ev, lang):
+            return
+
+        name = self._token_text(ev)
+        if not name:
+            return
+
+        # A light guard: many grammars will have '(' or similar immediately after the name
+        if next_token_type in _DECL_HEAD_STOP_TOKENS or next_token_type is None:
+            cur.name = name
+
     def _extract_qualified_name(self, events_window: List[CstEvent], fm: FileMeta) -> Optional[str]:
         """
         Best-effort extraction of qualified names (e.g., obj.method) from a small token window.
@@ -417,18 +505,42 @@ class Normalizer:
         return ".".join(parts)
 
     def _safe_classify(self, adapter: _Adapter, node_type: str, ev: CstEvent, sink: AnomalySink, fm: FileMeta) -> Tuple[Optional[NodeKind], bool]:
+        """Harden node-kind classification to handle all function/class variants."""
         try:
+            # Module
             if adapter.is_module(node_type):
                 return NodeKind.MODULE, True
-            if adapter.is_class(node_type):
+
+            # Class (libCST / TS) - explicit variants
+            if adapter.is_class(node_type) or node_type in {"ClassDef", "class_declaration", "class"}:
                 return NodeKind.CLASS, True
-            if adapter.is_function(node_type):
+
+            # Function / Method / Arrow / Async across languages - explicit variants
+            if adapter.is_function(node_type) or node_type in {
+                "FunctionDef", "AsyncFunctionDef",              # Python
+                "function_declaration", "method_definition",    # JS/TS
+                "generator_function_declaration",
+                "function", "arrow_function", "function_signature",
+            }:
                 return NodeKind.FUNCTION, True
+
+            # Imports / Exports (unchanged)
+            if _is_import_like(adapter, node_type):
+                return NodeKind.IMPORT, False
+            if _is_export_like(adapter, node_type):
+                return NodeKind.EXPORT, False
+
+            # Calls (unchanged)
+            if adapter.is_call(node_type):
+                return NodeKind.SYMBOL, False  # call-sites are symbols + CALL edges
+
+            # Decorators
             if adapter.is_decorator(node_type):
                 return NodeKind.EFFECT_CARRIER, True
-            if _is_import_like(adapter, node_type) or _is_export_like(adapter, node_type) or adapter.is_call(node_type):
-                return NodeKind.BLOCK, True
+
+            # Literals, identifiers, etc. fall through...
             return None, False
+
         except Exception as e:
             sink.emit(Anomaly(
                 path=fm.path,

@@ -303,6 +303,15 @@ class TSTreeSitterDriver(ParserDriver):
                     yield emit(node, CstEventKind.TOKEN)
                     stack.append((node, kids, 2))
                     continue
+                
+                # Special case: emit identifier tokens for function/class names
+                node_type = node.type
+                if node_type in ("function_declaration", "method_definition", "class_declaration"):
+                    # Look for identifier child (function/class name)
+                    for child in kids:
+                        if child.type in ("identifier", "property_identifier"):
+                            yield emit(child, CstEventKind.TOKEN)
+                            break
 
                 # EXIT after children
                 stack.append((node, kids, 2))
