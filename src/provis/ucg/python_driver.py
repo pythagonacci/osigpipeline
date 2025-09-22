@@ -70,7 +70,7 @@ class _ByteOffsetIndexer:
                     append(total)
             per_line_maps.append(per_char)
 
-            # Advance cumulative: bytes in this line + one byte for '\n' separator (except last line if file ends without newline—OK to over-allocate; we rely on mapping bounds)
+            # Advance cumulative: bytes in this line + one byte for '\n' separator
             cumulative += len(lb)
             if idx < len(lines_bytes) - 1:
                 cumulative += 1  # the '\n'
@@ -187,9 +187,12 @@ class PythonLibCstDriver(ParserDriver):
             raise ParserError(code="PARSE_ERROR", message="libcst.parse_module failed", detail=str(e))
 
         # Iterative DFS with explicit stack
-        stack: List[Tuple[cst.CSTNode, List[cst.CSTNode], int]] = []
+        # Stack entries: (node, children, state, name_token_emitted)
+        # state: 0 = enter, 1 = processing children, 2 = exit
+        # name_token_emitted: bool to track if we've already emitted name token for this node
+        stack: List[Tuple[cst.CSTNode, List[cst.CSTNode], int, bool]] = []
         root_children = list(module.children)
-        stack.append((module, root_children, 0))
+        stack.append((module, root_children, 0, False))
 
         def _emit_for_node(n: cst.CSTNode, kind: CstEventKind) -> CstEvent:
             try:
@@ -220,14 +223,15 @@ class PythonLibCstDriver(ParserDriver):
             Extract a TOKEN event for the name of a declaration node (FunctionDef, ClassDef, etc.)
             using the precise CodeRange from libcst's metadata.
             """
-            name_node: Optional[cst.CSTNode]
-            if isinstance(node, (cst.FunctionDef, cst.ClassDef)):
+            name_node: Optional[cst.CSTNode] = None
+            
+            if isinstance(node, cst.FunctionDef):
+                name_node = node.name
+            elif isinstance(node, cst.ClassDef):
                 name_node = node.name
             elif hasattr(node, "name") and isinstance(getattr(node, "name"), cst.CSTNode):
-                name_node = node.name  # type: ignore[assignment]
-            else:
-                name_node = None
-
+                name_node = getattr(node, "name")
+            
             if name_node is None:
                 return None
 
@@ -241,9 +245,10 @@ class PythonLibCstDriver(ParserDriver):
             if byte_end < byte_start:
                 byte_end = byte_start
 
+            # Important: The type should be "Name" to match what the normalizer expects
             return CstEvent(
                 kind=CstEventKind.TOKEN,
-                type=type(name_node).__name__,
+                type="Name",  # Use "Name" instead of the actual node type for identifiers
                 byte_start=byte_start,
                 byte_end=byte_end,
                 line_start=rng.start.line,
@@ -251,10 +256,19 @@ class PythonLibCstDriver(ParserDriver):
             )
 
         while stack:
-            node, children, state = stack.pop()
+            node, children, state, name_token_emitted = stack.pop()
+            
             if state == 0:
                 # ENTER
                 yield _emit_for_node(node, CstEventKind.ENTER)
+                
+                # Emit name token IMMEDIATELY after ENTER for declaration nodes
+                # This ensures the token appears in the correct position in the stream
+                if not name_token_emitted and isinstance(node, (cst.FunctionDef, cst.ClassDef)):
+                    name_token = _extract_name_token(node)
+                    if name_token:
+                        yield name_token
+                        name_token_emitted = True
 
                 # Determine if leaf using the already-built child list
                 # A node is a "leaf" iff it has NO CSTNode children.
@@ -266,16 +280,12 @@ class PythonLibCstDriver(ParserDriver):
 
                 if is_leaf:
                     # For leaf nodes, emit a TOKEN event with the node's own position
-                    yield _emit_for_node(node, CstEventKind.TOKEN)
+                    # But only if it's not a declaration node (we already handled those)
+                    if not isinstance(node, (cst.FunctionDef, cst.ClassDef)):
+                        yield _emit_for_node(node, CstEventKind.TOKEN)
                     # Schedule EXIT
-                    stack.append((node, children, 2))
+                    stack.append((node, children, 2, name_token_emitted))
                     continue
-                else:
-                    # For non-leaf nodes that are declarations, emit a name token if available
-                    if isinstance(node, (cst.FunctionDef, cst.ClassDef)):
-                        name_token = _extract_name_token(node)
-                        if name_token:
-                            yield name_token
 
                 # Order children robustly:
                 # - Try to key by (start.line, start.col) from PositionProvider
@@ -297,15 +307,15 @@ class PythonLibCstDriver(ParserDriver):
                 keyed.sort(key=lambda t: t[0])
 
                 # Schedule EXIT after children
-                stack.append((node, children, 2))
+                stack.append((node, children, 2, name_token_emitted))
 
                 # Push children in reverse so we visit in ascending order
                 for _, ch in reversed(keyed):
                     if isinstance(ch, cst.CSTNode):
-                        stack.append((ch, list(ch.children), 0))
+                        stack.append((ch, list(ch.children), 0, False))
 
             else:
-                # EXIT
+                # EXIT (state == 2)
                 yield _emit_for_node(node, CstEventKind.EXIT)
 
     @staticmethod
