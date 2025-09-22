@@ -219,43 +219,47 @@ class PythonLibCstDriver(ParserDriver):
             Extract a TOKEN event for the name of a declaration node (FunctionDef, ClassDef, etc.)
             Returns a CstEvent with the correct position of just the name token, not the whole node.
             """
-            name_str = None
-            name_node = None
-            
+            name_node: Optional[cst.CSTNode] = None
+
             # Extract the name based on node type
             if isinstance(node, cst.FunctionDef):
                 name_node = node.name
-                name_str = node.name.value if hasattr(node.name, 'value') else str(node.name)
             elif isinstance(node, cst.ClassDef):
                 name_node = node.name
-                name_str = node.name.value if hasattr(node.name, 'value') else str(node.name)
-            elif hasattr(node, 'name') and hasattr(node.name, 'value'):
+            elif hasattr(node, "name") and isinstance(node.name, cst.CSTNode):
                 name_node = node.name
-                name_str = node.name.value
-            
-            if not name_str or not name_node:
+
+            if name_node is None:
                 return None
-            
-            # Since position lookup is failing, use a simple fallback approach
-            # Create a token with reasonable default positions that the normalizer can work with
-            # The key is to have different positions for different names so they can be distinguished
+
+            code_range: Optional[CodeRange] = None
             try:
-                # Use the name string to create a deterministic position
-                name_hash = hash(name_str) % 1000  # Create a small range
-                b_start = name_hash
-                b_end = name_hash + len(name_str)
-                
-                token_event = CstEvent(
-                    kind=CstEventKind.TOKEN,
-                    type="Name",
-                    byte_start=b_start,
-                    byte_end=b_end,
-                    line_start=1,  # Default line
-                    line_end=1,    # Default line
-                )
-                return token_event
+                code_range = positions[name_node]
+            except Exception:
+                code_range = None
+
+            if code_range is None:
+                try:
+                    code_range = positions[node]
+                except Exception:
+                    return None
+
+            try:
+                byte_start = indexer.to_byte_offset(code_range.start.line, code_range.start.column)
+                byte_end = indexer.to_byte_offset(code_range.end.line, code_range.end.column)
+                line_start = code_range.start.line
+                line_end = code_range.end.line
             except Exception:
                 return None
+
+            return CstEvent(
+                kind=CstEventKind.TOKEN,
+                type="Name",
+                byte_start=byte_start,
+                byte_end=byte_end if byte_end >= byte_start else byte_start,
+                line_start=line_start,
+                line_end=line_end if line_end >= line_start else line_start,
+            )
 
         while stack:
             node, children, state = stack.pop()
@@ -280,13 +284,9 @@ class PythonLibCstDriver(ParserDriver):
                 else:
                     # For non-leaf nodes that are declarations, emit a name token if available
                     if isinstance(node, (cst.FunctionDef, cst.ClassDef)):
-                        print(f"DEBUG: Found {node.__class__.__name__} as non-leaf node")
                         name_token = _extract_name_token(node)
                         if name_token:
-                            print(f"DEBUG: Successfully created name token")
                             yield name_token
-                        else:
-                            print(f"DEBUG: Failed to create name token")
 
                 # Order children robustly:
                 # - Try to key by (start.line, start.col) from PositionProvider
