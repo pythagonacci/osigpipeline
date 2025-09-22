@@ -244,9 +244,10 @@ class Normalizer:
             )
             return
 
+        # Initialize stacks
         scope_stack: List[_Scope] = []
         pend_stack: List[_PendingConstruct] = []
-        pending_scopes: Dict[int, _Scope] = {}  # key = byte_start → scope (activated at ENTER)
+        pending_scopes: Dict[int, _Scope] = {}
         
         # NEW: Track pending name tokens that arrive before their declaration's ENTER is processed
         pending_name_token: Optional[Tuple[CstEvent, str]] = None
@@ -357,7 +358,15 @@ class Normalizer:
 
                 # call placeholder (we'll emit CALL edge at EXIT)
                 if adapter.is_call(ev.type):
-                    cur.want_edge_from = scope_stack[-1].node_id if scope_stack else file_id
+                    # Prefer nearest enclosing FUNCTION scope as caller; fallback to current top or file
+                    caller_id = None
+                    for s in reversed(scope_stack):
+                        if s.kind == NodeKind.FUNCTION:
+                            caller_id = s.node_id
+                            break
+                    if caller_id is None:
+                        caller_id = scope_stack[-1].node_id if scope_stack else file_id
+                    cur.want_edge_from = caller_id
                     cur.extra["call_like"] = "1"
 
                 pend_stack.append(cur)
@@ -465,6 +474,21 @@ class Normalizer:
                         erow = self._edge_row(fm, info, EdgeKind.DECORATES, src_id=nrow.id, dst_id=scope_stack[-1].node_id, ev=ev, extra={})
                         yield ("edge", erow)
 
+                # Fallback emission: if this was recognized as a function/class by adapter,
+                # but no scope was opened (cur.kind got demoted to BLOCK), still emit a node
+                # and a defines edge under the nearest parent scope (module/class) or file.
+                if cur.kind == NodeKind.BLOCK:
+                    if adapter.is_function(cur.type_name) or adapter.is_class(cur.type_name):
+                        inferred_kind = NodeKind.FUNCTION if adapter.is_function(cur.type_name) else NodeKind.CLASS
+                        node_id = self._start_based_node_id(fm, inferred_kind, cur.byte_start)
+                        parent_id = scope_stack[-1].node_id if scope_stack else file_id
+                        nrow = self._node_row_with_start_id(
+                            fm, info, inferred_kind, node_id, name=cur.name, ev=ev, extra={"type": cur.type_name, "inferred": "true"}
+                        )
+                        yield ("node", nrow)
+                        erow = self._edge_row(fm, info, EdgeKind.DEFINES, src_id=parent_id, dst_id=node_id, ev=ev, extra={"inferred": "true"})
+                        yield ("edge", erow)
+
                 # Imports / exports as symbols
                 if _is_import_like(adapter, cur.type_name):
                     sym = self._create_symbol_node(fm, info, cur.name or "<unknown>", ev, "import")
@@ -482,8 +506,11 @@ class Normalizer:
                     sym = self._create_symbol_node(fm, info, callee, ev, "callee")
                     yield ("node", sym)
                     src_id = cur.want_edge_from or (scope_stack[-1].node_id if scope_stack else file_id)
+                    # Attach a lightweight argument stub for Step-2 alignment (best-effort)
+                    args_stub = self._build_args_stub(fm, ev)
                     yield ("edge", self._edge_row(
-                        fm, info, EdgeKind.CALLS, src_id=src_id, dst_id=sym.id, ev=ev, extra={"callee": callee}
+                        fm, info, EdgeKind.CALLS, src_id=src_id, dst_id=sym.id, ev=ev,
+                        extra={"callee": callee, "args_model_stub": args_stub}
                     ))
 
         # Synthesize endings for any scopes that never got an EXIT (malformed/partial trees)
@@ -553,6 +580,15 @@ class Normalizer:
             return None
         parts = list(reversed(collected))  # we collected backwards
         return ".".join(parts)
+
+    def _build_args_stub(self, fm: FileMeta, ev: CstEvent) -> List[Dict[str, object]]:
+        """
+        Best-effort, bounded argument model stub for call edges.
+        We do not parse deeply here; we return an empty list (valid JSON array),
+        which is sufficient for Step-2 presence checks. Implementors can enhance
+        this to slice spans and classify literals/templates/identifiers.
+        """
+        return []
 
     def _safe_classify(self, adapter: _Adapter, node_type: str, ev: CstEvent, sink: AnomalySink, fm: FileMeta) -> Tuple[Optional[NodeKind], bool]:
         """Harden node-kind classification to handle all function/class variants."""

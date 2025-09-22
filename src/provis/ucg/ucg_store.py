@@ -144,14 +144,41 @@ class UcgStore:
         """
         for kind, row in rows:
             if kind == "node":
+                # Duck-type to tolerate equivalent rows from different module contexts
                 if not isinstance(row, NodeRow):
-                    raise TypeError("node row must be NodeRow")
+                    try:
+                        mapped = {
+                            "id": getattr(row, "id"),
+                            "kind": getattr(row, "kind"),
+                            "name": getattr(row, "name", None),
+                            "path": getattr(row, "path"),
+                            "lang": getattr(row, "lang"),
+                            "attrs_json": getattr(row, "attrs_json", "{}"),
+                            "prov": getattr(row, "prov"),
+                        }
+                        row = NodeRow(**mapped)  # type: ignore[arg-type]
+                    except Exception:
+                        raise TypeError("node row must be NodeRow-like with required attributes")
                 self._node_buf.add(_node_to_arrow_row(row))
                 if self._node_buf.should_roll():
                     self._flush_nodes()
             elif kind == "edge":
+                # Duck-type to tolerate equivalent rows from different module contexts
                 if not isinstance(row, EdgeRow):
-                    raise TypeError("edge row must be EdgeRow")
+                    try:
+                        mapped = {
+                            "id": getattr(row, "id"),
+                            "kind": getattr(row, "kind"),
+                            "src_id": getattr(row, "src_id"),
+                            "dst_id": getattr(row, "dst_id"),
+                            "path": getattr(row, "path"),
+                            "lang": getattr(row, "lang"),
+                            "attrs_json": getattr(row, "attrs_json", "{}"),
+                            "prov": getattr(row, "prov"),
+                        }
+                        row = EdgeRow(**mapped)  # type: ignore[arg-type]
+                    except Exception:
+                        raise TypeError("edge row must be EdgeRow-like with required attributes")
                 self._edge_buf.add(_edge_to_arrow_row(row))
                 if self._edge_buf.should_roll():
                     self._flush_edges()

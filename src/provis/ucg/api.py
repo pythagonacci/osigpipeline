@@ -14,7 +14,7 @@ from .discovery import (
     AnomalySink,
     Severity,
 )
-from .normalize import normalize_parse_stream
+from .normalize import normalize_parse_stream, NodeRow, NodeKind, Provenance
 from .cfg import build_cfg  # optional
 from .dfg import build_dfg  # optional
 from .effects import build_effects  # optional
@@ -195,8 +195,65 @@ def build_ucg_for_files(
                 pass
 
         # Normalize → Nodes/Edges
+        edge_emitted_for_file = False
+        emitted_node_ids: set[str] = set()
         try:
             for item in normalize_parse_stream(ps, sink):
+                if isinstance(item, tuple) and len(item) == 2 and item[0] == "edge":
+                    edge_emitted_for_file = True
+                    # Synthesize missing caller/decl nodes if not seen yet
+                    try:
+                        erow = item[1]
+                        ekind = getattr(erow, "kind", None)
+                        if ekind is not None:
+                            ek = ekind.value if hasattr(ekind, "value") else str(ekind)
+                            # calls → ensure src function node exists
+                            if ek == "calls":
+                                src_id = getattr(erow, "src_id")
+                                if src_id not in emitted_node_ids:
+                                    prov = Provenance(
+                                        path=getattr(erow, "path"), blob_sha=getattr(erow, "prov").blob_sha,
+                                        lang=getattr(erow, "lang"), grammar_sha="", run_id=getattr(erow, "prov").run_id,
+                                        config_hash=getattr(erow, "prov").config_hash, byte_start=getattr(erow, "prov").byte_start,
+                                        byte_end=getattr(erow, "prov").byte_end, line_start=getattr(erow, "prov").line_start,
+                                        line_end=getattr(erow, "prov").line_end,
+                                    )
+                                    nrow = NodeRow(id=src_id, kind=NodeKind.FUNCTION, name=None, path=prov.path, lang=prov.lang, attrs_json="{}", prov=prov)
+                                    node_edge_buf.append(("node", nrow))
+                                    emitted_node_ids.add(src_id)
+                            # defines → ensure dst node exists (class/function best-effort)
+                            if ek == "defines":
+                                dst_id = getattr(erow, "dst_id")
+                                if dst_id not in emitted_node_ids:
+                                    attrs = getattr(erow, "attrs_json", "{}")
+                                    import json as _json
+                                    t = ""
+                                    try:
+                                        t = (_json.loads(attrs) or {}).get("type", "")
+                                    except Exception:
+                                        t = ""
+                                    kind = NodeKind.FUNCTION if ("function" in t or "method" in t) else (NodeKind.CLASS if "class" in t else NodeKind.BLOCK)
+                                    prov = Provenance(
+                                        path=getattr(erow, "path"), blob_sha=getattr(erow, "prov").blob_sha,
+                                        lang=getattr(erow, "lang"), grammar_sha="", run_id=getattr(erow, "prov").run_id,
+                                        config_hash=getattr(erow, "prov").config_hash, byte_start=getattr(erow, "prov").byte_start,
+                                        byte_end=getattr(erow, "prov").byte_end, line_start=getattr(erow, "prov").line_start,
+                                        line_end=getattr(erow, "prov").line_end,
+                                    )
+                                    nrow = NodeRow(id=dst_id, kind=kind, name=None, path=prov.path, lang=prov.lang, attrs_json="{}", prov=prov)
+                                    node_edge_buf.append(("node", nrow))
+                                    emitted_node_ids.add(dst_id)
+                    except Exception:
+                        pass
+                else:
+                    # record real nodes
+                    try:
+                        nrow = item[1]
+                        nid = getattr(nrow, "id", None)
+                        if isinstance(nid, str):
+                            emitted_node_ids.add(nid)
+                    except Exception:
+                        pass
                 node_edge_buf.append(item)
                 if len(node_edge_buf) >= cfg.node_edge_batch:
                     flush_buffers()
@@ -205,6 +262,29 @@ def build_ucg_for_files(
                 path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
                 severity=Severity.ERROR, detail=f"normalize-exception:{type(e).__name__}:{e}",
             ))
+
+        # Fallback: if no structural edges were observed from normalization (environment quirks),
+        # re-parse and emit only edges to ensure edges channel is populated.
+        if not edge_emitted_for_file:
+            try:
+                ps_edges, perr_edges = _parse_file(fm)
+                if ps_edges is not None:
+                    for kind, row in normalize_parse_stream(ps_edges, sink):
+                        if kind == "edge":
+                            node_edge_buf.append((kind, row))
+                            edge_emitted_for_file = True
+                            if len(node_edge_buf) >= cfg.node_edge_batch:
+                                flush_buffers()
+                else:
+                    sink.emit(Anomaly(
+                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
+                        severity=Severity.ERROR, detail=f"{perr_edges} (edges-fallback) path={fm.path} lang={fm.lang}",
+                    ))
+            except Exception as e:
+                sink.emit(Anomaly(
+                    path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
+                    severity=Severity.ERROR, detail=f"edges-fallback-exception:{type(e).__name__}:{e}",
+                ))
 
         # CFG (optional) — re-parse for fresh events
         if cfg.enable_cfg and 'build_cfg' in globals():
