@@ -17,6 +17,7 @@ from .discovery import (
 from .normalize import normalize_parse_stream
 from .cfg import build_cfg
 from .dfg import build_dfg
+from .effects import build_effects
 from .ucg_store import UcgStore
 # If you added these drivers; otherwise, swap in your actual parser integrations.
 from .python_driver import PythonDriver  # type: ignore
@@ -205,6 +206,16 @@ def build_ucg_for_files(
                         detail=f"dfg-exception:{type(e).__name__}:{e}",
                     )
                 )
+
+        # Effects (neutral carriers)
+        try:
+            for item in build_effects(ps, sink):
+                store.append_effects([item])
+        except Exception as e:
+            sink.emit(Anomaly(
+                path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
+                severity=Severity.ERROR, detail=f"effects-exception:{type(e).__name__}:{e}",
+            ))
 
         # Periodically flush (keeps memory bounded on huge repos)
         if (files_parsed % 50) == 0:

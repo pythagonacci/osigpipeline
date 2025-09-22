@@ -22,6 +22,7 @@ from .cfg import BlockRow, CfgEdgeRow
 from .dfg import DfgNodeRow, DfgEdgeRow
 from .normalize import NodeRow, EdgeRow, NodeKind, EdgeKind
 from .symbols import SymbolRow, AliasRow
+from .effects import EffectRow, EffectKind
 # Anomalies
 from .discovery import Anomaly
 
@@ -75,6 +76,7 @@ class UcgStore:
         (self._staging / "dfg_edges").mkdir(parents=True, exist_ok=True)
         (self._staging / "symbols").mkdir(parents=True, exist_ok=True)
         (self._staging / "aliases").mkdir(parents=True, exist_ok=True)
+        (self._staging / "effects").mkdir(parents=True, exist_ok=True)
 
         # Schemas
         self._node_schema = _node_schema()
@@ -86,6 +88,7 @@ class UcgStore:
         self._dfg_edge_schema = _dfg_edge_schema()
         self._symbol_schema = _symbol_schema()
         self._alias_schema = _alias_schema()
+        self._effect_schema = _effect_schema()
 
         # Buffers
         self._node_buf = _AdaptiveRowBuffer(self._node_schema, self.roll_rows, self.max_buffer_memory_mb)
@@ -97,6 +100,7 @@ class UcgStore:
         self._dfg_edge_buf = _AdaptiveRowBuffer(self._dfg_edge_schema, self.roll_rows, self.max_buffer_memory_mb)
         self._symbol_buf = _AdaptiveRowBuffer(self._symbol_schema, self.roll_rows, self.max_buffer_memory_mb)
         self._alias_buf = _AdaptiveRowBuffer(self._alias_schema, self.roll_rows, self.max_buffer_memory_mb)
+        self._effect_buf = _AdaptiveRowBuffer(self._effect_schema, self.roll_rows, self.max_buffer_memory_mb)
 
         # Counters/indices
         self._node_file_idx = 0
@@ -108,6 +112,7 @@ class UcgStore:
         self._dfg_edge_file_idx = 0
         self._symbol_file_idx = 0
         self._alias_file_idx = 0
+        self._effect_file_idx = 0
         self._node_rows_total = 0
         self._edge_rows_total = 0
         self._anomaly_rows_total = 0
@@ -117,6 +122,7 @@ class UcgStore:
         self._dfg_edge_rows_total = 0
         self._symbol_rows_total = 0
         self._alias_rows_total = 0
+        self._effect_rows_total = 0
         self._bytes_written = 0
 
         # Compression
@@ -219,6 +225,16 @@ class UcgStore:
             else:
                 raise ValueError(f"unknown symbol-kind: {kind!r}")
 
+    def append_effects(self, rows: Iterable[Tuple[str, object]]) -> None:
+        for kind, row in rows:
+            if kind != "effect":
+                raise ValueError(f"unknown effect row kind: {kind!r}")
+            if not isinstance(row, EffectRow):
+                raise TypeError("effect row must be EffectRow")
+            self._effect_buf.add(_effect_to_arrow_row(row))
+            if self._effect_buf.should_roll():
+                self._flush_effects()
+
     # ----------------------------- flush/finalize ------------------------------
 
     def flush(self) -> None:
@@ -231,6 +247,7 @@ class UcgStore:
         self._flush_dfg_edges()
         self._flush_symbols()
         self._flush_aliases()
+        self._flush_effects()
 
     def finalize(self, *, receipt: Dict) -> None:
         """
@@ -250,6 +267,7 @@ class UcgStore:
             "dfg_edge_rows": self._dfg_edge_rows_total,
             "symbol_rows": self._symbol_rows_total,
             "alias_rows": self._alias_rows_total,
+            "effect_rows": self._effect_rows_total,
             "bytes_written": self._bytes_written,
             "compression": {"algorithm": "zstd", "level": self.zstd_level},
             "files": {
@@ -262,6 +280,7 @@ class UcgStore:
                 "dfg_edges": self._dfg_edge_file_idx,
                 "symbols": self._symbol_file_idx,
                 "aliases": self._alias_file_idx,
+                "effects": self._effect_file_idx,
             },
             "created_at_epoch": int(time.time()),
             "created_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -372,6 +391,16 @@ class UcgStore:
         self._alias_file_idx += 1
         self._transaction_log.append(f"wrote_aliases:{path.name}")
         self._alias_buf.clear()
+
+    def _flush_effects(self) -> None:
+        if not self._effect_buf:
+            return
+        path = self._staging / "effects" / f"{self.file_prefix}_effects_{self._effect_file_idx:05}.parquet"
+        rows_written = self._verified_write(self._effect_buf, path)
+        self._effect_rows_total += rows_written
+        self._effect_file_idx += 1
+        self._transaction_log.append(f"wrote_effects:{path.name}")
+        self._effect_buf.clear()
 
     # ----------------------------- internals: write helpers --------------------
 
@@ -490,6 +519,12 @@ class UcgStore:
                     "partitions": ["alias_kind"],
                     "row_count": self._alias_rows_total,
                 },
+                "effects": {
+                    "path": "effects/*.parquet",
+                    "schema": str(self._effect_schema),
+                    "partitions": ["lang", "kind"],
+                    "row_count": self._effect_rows_total,
+                },
             }
         }
         (self._staging / "catalog.json").write_text(json.dumps(catalog, indent=2), encoding="utf-8")
@@ -505,6 +540,7 @@ class UcgStore:
             "CREATE TABLE dfg_edges AS SELECT * FROM read_parquet('dfg_edges/*.parquet');",
             "CREATE TABLE symbols AS SELECT * FROM read_parquet('symbols/*.parquet');",
             "CREATE TABLE aliases AS SELECT * FROM read_parquet('aliases/*.parquet');",
+            "CREATE TABLE effects AS SELECT * FROM read_parquet('effects/*.parquet');",
             "",
             "-- Suggested indexes",
             "CREATE INDEX idx_nodes_kind ON nodes(kind);",
@@ -523,6 +559,9 @@ class UcgStore:
             "CREATE INDEX idx_aliases_kind ON aliases(alias_kind);",
             "CREATE INDEX idx_aliases_alias ON aliases(alias_id);",
             "CREATE INDEX idx_aliases_tgt ON aliases(target_symbol_id);",
+            "CREATE INDEX idx_effects_kind ON effects(kind);",
+            "CREATE INDEX idx_effects_carr ON effects(carrier);",
+            "CREATE INDEX idx_effects_path ON effects(path);",
         ]
         (self._staging / "schema.sql").write_text("\n".join(duckdb_sql), encoding="utf-8")
 
@@ -757,6 +796,30 @@ def _alias_schema() -> pa.schema:
     return schema.with_metadata({"version": SCHEMA_VERSION})
 
 
+def _effect_schema() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("carrier", pa.string()),
+        pa.field("args_json", pa.string()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION})
+
+
 def _node_to_arrow_row(n: NodeRow) -> Dict:
     return dict(
         id=n.id,
@@ -962,6 +1025,29 @@ def _alias_to_arrow_row(a: AliasRow) -> Dict:
         prov_byte_end=int(a.prov.byte_end),
         prov_line_start=int(a.prov.line_start),
         prov_line_end=int(a.prov.line_end),
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def _effect_to_arrow_row(r: EffectRow) -> Dict:
+    return dict(
+        id=r.id,
+        kind=r.kind.value if hasattr(r.kind, "value") else str(r.kind),
+        carrier=r.carrier,
+        args_json=r.args_json,
+        path=r.path,
+        lang=getattr(r.lang, "value", str(r.lang)),
+        attrs_json=r.attrs_json,
+        prov_path=r.prov.path,
+        prov_blob_sha=r.prov.blob_sha,
+        prov_lang=getattr(r.prov.lang, "value", str(r.prov.lang)),
+        prov_grammar_sha=r.prov.grammar_sha,
+        prov_run_id=r.prov.run_id,
+        prov_config_hash=r.prov.config_hash,
+        prov_byte_start=int(r.prov.byte_start),
+        prov_byte_end=int(r.prov.byte_end),
+        prov_line_start=int(r.prov.line_start),
+        prov_line_end=int(r.prov.line_end),
         schema_version=SCHEMA_VERSION,
     )
 
