@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Iterator, List, Optional, Tuple
 
@@ -92,6 +93,48 @@ class _ByteOffsetIndexer:
             col_0based = len(per_line) - 1  # clamp to end of line
 
         return self.line_start_bytes[line_index] + per_line[col_0based]
+
+    def byte_to_line_col(self, byte_offset: int) -> Tuple[int, int]:
+        """Map an absolute byte offset back to (1-based line, 0-based column)."""
+
+        if not self.line_start_bytes:
+            return 1, 0
+
+        if byte_offset < 0:
+            byte_offset = 0
+        else:
+            last_line_index = len(self.line_start_bytes) - 1
+            last_line = self.line_char_to_byte[last_line_index]
+            last_span = last_line[-1] if last_line else 0
+            total_bytes = self.line_start_bytes[last_line_index] + last_span
+            if byte_offset > total_bytes:
+                byte_offset = total_bytes
+
+        # Locate the line whose start byte is <= byte_offset
+        line_index = bisect_right(self.line_start_bytes, byte_offset) - 1
+        if line_index < 0:
+            line_index = 0
+        if line_index >= len(self.line_start_bytes):
+            line_index = len(self.line_start_bytes) - 1
+
+        line_start_byte = self.line_start_bytes[line_index]
+        rel = byte_offset - line_start_byte
+        if rel < 0:
+            rel = 0
+
+        per_line = self.line_char_to_byte[line_index]
+        if not per_line:
+            return line_index + 1, 0
+
+        # per_line is a non-decreasing list of cumulative byte lengths. Find the
+        # greatest column whose byte length does not exceed rel.
+        col_index = bisect_right(per_line, rel) - 1
+        if col_index < 0:
+            col_index = 0
+        if col_index >= len(per_line):
+            col_index = len(per_line) - 1
+
+        return line_index + 1, col_index
 
 
 # -----------------------------------------------------------------------------
@@ -234,20 +277,61 @@ class PythonLibCstDriver(ParserDriver):
             try:
                 rng: CodeRange = positions[name_node]
             except Exception:
-                return None
+                rng = None
 
-            byte_start = indexer.to_byte_offset(rng.start.line, rng.start.column)
-            byte_end = indexer.to_byte_offset(rng.end.line, rng.end.column)
-            if byte_end < byte_start:
-                byte_end = byte_start
+            if rng is not None:
+                byte_start = indexer.to_byte_offset(rng.start.line, rng.start.column)
+                byte_end = indexer.to_byte_offset(rng.end.line, rng.end.column)
+                if byte_end < byte_start:
+                    byte_end = byte_start
+                line_start = rng.start.line
+                line_end = rng.end.line
+            else:
+                # Fallback: derive the span directly from the source bytes. This handles
+                # rare cases where metadata for the name node is missing but the parent
+                # node still has a precise range.
+                value = getattr(name_node, "value", None)
+                if not isinstance(value, str) or not value:
+                    return None
+
+                parent_rng = positions.get(node)
+                if parent_rng is not None:
+                    parent_start = indexer.to_byte_offset(parent_rng.start.line, parent_rng.start.column)
+                    parent_end = indexer.to_byte_offset(parent_rng.end.line, parent_rng.end.column)
+                    if parent_end < parent_start:
+                        parent_end = parent_start
+                else:
+                    parent_start = 0
+                    parent_end = len(raw)
+
+                if parent_end <= parent_start:
+                    return None
+
+                name_bytes = value.encode(enc, errors="ignore")
+                if not name_bytes:
+                    return None
+
+                slice_start = max(0, parent_start)
+                slice_end = min(len(raw), parent_end)
+                haystack = raw[slice_start:slice_end]
+                rel_index = haystack.find(name_bytes)
+                if rel_index < 0:
+                    return None
+
+                byte_start = slice_start + rel_index
+                byte_end = byte_start + len(name_bytes)
+                line_start, _ = indexer.byte_to_line_col(byte_start)
+                line_end, _ = indexer.byte_to_line_col(byte_end)
+                if line_end < line_start:
+                    line_end = line_start
 
             return CstEvent(
                 kind=CstEventKind.TOKEN,
                 type=type(name_node).__name__,
                 byte_start=byte_start,
                 byte_end=byte_end,
-                line_start=rng.start.line,
-                line_end=rng.end.line,
+                line_start=line_start,
+                line_end=line_end,
             )
 
         while stack:
