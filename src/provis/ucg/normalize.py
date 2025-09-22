@@ -41,6 +41,8 @@ class NodeKind(str, Enum):
     SYMBOL = "symbol"
     LITERAL = "literal"
     EFFECT_CARRIER = "effect_carrier"  # neutral placeholder (e.g., decorator)
+    IMPORT = "import"  # Added missing enum values
+    EXPORT = "export"
 
 
 class EdgeKind(str, Enum):
@@ -245,6 +247,9 @@ class Normalizer:
         scope_stack: List[_Scope] = []
         pend_stack: List[_PendingConstruct] = []
         pending_scopes: Dict[int, _Scope] = {}  # key = byte_start → scope (activated at ENTER)
+        
+        # NEW: Track pending name tokens that arrive before their declaration's ENTER is processed
+        pending_name_token: Optional[Tuple[CstEvent, str]] = None
 
         module_emitted = False
 
@@ -253,22 +258,44 @@ class Normalizer:
             if not self._validate_event(ev, fm, sink):
                 continue
 
-            # maintain small token window for qualified-name heuristics
+            # Process TOKEN events
             if ev.kind == CstEventKind.TOKEN:
                 self._token_window.append(ev)
                 
-                # --- NEW: attempt declaration head name capture --------------------------
-                if pend_stack:
-                    cur = pend_stack[-1]
-                    # Identify the next token type (if any) without consuming the stream.
-                    next_tok_type = None
-                    if len(self._token_window) >= 2:
-                        nxt = self._token_window[-1]   # current
-                        # try to infer the "next" token by peeking an adapter-specific hint from the driver
-                        # Many drivers won't provide it synchronously—fallback to None, which we allow
-                    # If the token itself is identifier-like, try to capture
-                    self._maybe_capture_decl_name(fm.lang, cur, ev, next_token_type=next_tok_type)
-                # -------------------------------------------------------------------------
+                # Check if this is an identifier token
+                if adapter.is_identifier_token(ev.type):
+                    # Extract the token name
+                    token_name = self._safe_token_name(ev, fm)
+                    if token_name:
+                        # If we have a pending construct at this exact byte position, 
+                        # this is likely its name token
+                        if pend_stack:
+                            cur = pend_stack[-1]
+                            # Check if this token immediately follows the construct's ENTER
+                            # (within a small byte range to account for whitespace)
+                            if (cur.kind in (NodeKind.FUNCTION, NodeKind.CLASS) and 
+                                cur.name is None and
+                                abs(ev.byte_start - cur.byte_start) <= 50):  # reasonable proximity
+                                cur.name = token_name
+                                # Also update the scope if it exists
+                                if scope_stack and scope_stack[-1].byte_start == cur.byte_start:
+                                    scope_stack[-1].name = token_name
+                        else:
+                            # Store as potentially pending name token for next ENTER
+                            pending_name_token = (ev, token_name)
+                
+                # Process string tokens
+                elif adapter.is_string_token(ev.type):
+                    if pend_stack:
+                        cur = pend_stack[-1]
+                        lit_val = self._slice_literal_span_only(ev)
+                        if lit_val is not None:
+                            if cur.kind == NodeKind.LITERAL:
+                                cur.extra["value"] = lit_val
+                            elif "literal_hint" not in cur.extra and (ev.byte_end - ev.byte_start) <= 256:
+                                cur.extra["literal_hint"] = "<span>"
+                
+                continue  # TOKEN events don't need further processing
 
             nkind, will_emit = self._safe_classify(adapter, ev.type, ev, sink, fm)
 
@@ -284,7 +311,6 @@ class Normalizer:
                             detail=f"Resource limits exceeded (scopes={len(scope_stack)}, pending={len(pend_stack)})",
                         )
                     )
-                    # Stop normalizing this file but keep FILE node present
                     return
 
                 # Track all nodes for potential names/literals
@@ -294,6 +320,16 @@ class Normalizer:
                     byte_start=ev.byte_start,
                     line_start=ev.line_start,
                 )
+                
+                # NEW: Check if we have a pending name token that might belong to this declaration
+                if (nkind in (NodeKind.FUNCTION, NodeKind.CLASS) and 
+                    pending_name_token is not None):
+                    token_ev, token_name = pending_name_token
+                    # Check if the token is close to this ENTER (within reasonable byte range)
+                    if abs(token_ev.byte_start - ev.byte_start) <= 50:
+                        cur.name = token_name
+                        pending_name_token = None  # Consume the pending token
+                
                 # Handle MODULE & scope-creating nodes
                 if nkind == NodeKind.MODULE and self.cfg.emit_module_nodes and not module_emitted:
                     mod_id = self._start_based_node_id(fm, NodeKind.MODULE, ev.byte_start)
@@ -306,35 +342,23 @@ class Normalizer:
                 if nkind in (NodeKind.CLASS, NodeKind.FUNCTION):
                     node_id = self._start_based_node_id(fm, nkind, ev.byte_start)
                     parent_id = scope_stack[-1].node_id if scope_stack else (file_id if module_emitted else file_id)
-                    scope = _Scope(node_id=node_id, kind=nkind, name=None, parent_id=parent_id, byte_start=ev.byte_start)
+                    # Use the name from cur if we captured it from pending token
+                    scope = _Scope(node_id=node_id, kind=nkind, name=cur.name, parent_id=parent_id, byte_start=ev.byte_start)
                     scope_stack.append(scope)
                     pending_scopes[ev.byte_start] = scope
 
-                # call placeholder (we’ll emit CALL edge at EXIT)
+                # call placeholder (we'll emit CALL edge at EXIT)
                 if adapter.is_call(ev.type):
                     cur.want_edge_from = scope_stack[-1].node_id if scope_stack else file_id
                     cur.extra["call_like"] = "1"
 
                 pend_stack.append(cur)
-
-            elif ev.kind == CstEventKind.TOKEN:
-                if not pend_stack:
-                    continue
-                cur = pend_stack[-1]
-                if adapter.is_identifier_token(ev.type) and cur.name is None:
-                    nm = self._safe_token_name(ev, fm)
-                    if nm:
-                        cur.name = nm
-                        # If we are inside an active scope lacking a name, fill it
-                        if scope_stack and scope_stack[-1].name is None and scope_stack[-1].byte_start == cur.byte_start and cur.kind in (NodeKind.CLASS, NodeKind.FUNCTION):
-                            scope_stack[-1].name = nm
-                elif adapter.is_string_token(ev.type):
-                    lit_val = self._slice_literal_span_only(ev)
-                    if lit_val is not None:
-                        if cur.kind == NodeKind.LITERAL:
-                            cur.extra["value"] = lit_val
-                        elif "literal_hint" not in cur.extra and (ev.byte_end - ev.byte_start) <= 256:
-                            cur.extra["literal_hint"] = "<span>"
+                
+                # Clear pending name token if it's too far from this ENTER
+                if pending_name_token is not None:
+                    token_ev, _ = pending_name_token
+                    if abs(token_ev.byte_start - ev.byte_start) > 100:
+                        pending_name_token = None
 
             elif ev.kind == CstEventKind.EXIT:
                 # Find corresponding pending construct (should match top)
@@ -342,27 +366,27 @@ class Normalizer:
                     continue
                 cur = pend_stack.pop()
                 
-                # --- NEW: final attempt to set a name for functions/classes -------------
+                # Final attempt to set a name for functions/classes if we still don't have one
                 if cur.kind in (NodeKind.FUNCTION, NodeKind.CLASS) and not cur.name:
-                    # Walk backwards for the last identifier before a head delimiter
+                    # Walk backwards through recent tokens for the last identifier
                     tw = list(self._token_window)[-12:]
-                    ident = None
-                    saw_head_stop = False
                     for t in reversed(tw):
-                        tt = getattr(t, "type", None) or getattr(t, "token_type", None)
-                        if tt in _DECL_HEAD_STOP_TOKENS:
-                            saw_head_stop = True
-                            continue
-                        if self._token_is_identifier(t, fm.lang) and (saw_head_stop or fm.lang is Language.PY):
-                            ident = self._token_text(t)
-                            break
-                    if ident:
-                        cur.name = ident
-                # -----------------------------------------------------------------------
+                        # Check if this token is within the function/class span
+                        if t.byte_start >= cur.byte_start and t.byte_start <= ev.byte_end:
+                            if self._token_is_identifier(t, fm.lang):
+                                name = self._safe_token_name(t, fm)
+                                if name and not name.startswith('_') or name.startswith('__'):
+                                    # Avoid internal names unless they're special like __init__
+                                    cur.name = name
+                                    break
 
                 # If this EXIT closes an active scope, finalize it now
                 maybe_scope = pending_scopes.pop(cur.byte_start, None)
                 if maybe_scope is not None:
+                    # Update scope name if we found one
+                    if cur.name and not maybe_scope.name:
+                        maybe_scope.name = cur.name
+                    
                     # Emit the node for the scope with full provenance (end bytes)
                     nrow = self._node_row_with_start_id(
                         fm, info, maybe_scope.kind, maybe_scope.node_id, name=maybe_scope.name, ev=ev, extra={"type": cur.type_name}
@@ -440,34 +464,6 @@ class Normalizer:
             if isinstance(v, str) and v.strip():
                 return v
         return None
-
-    def _maybe_capture_decl_name(
-        self,
-        lang: Language,
-        cur: _PendingConstruct,
-        ev: CstEvent,
-        next_token_type: Optional[str] = None,
-    ) -> None:
-        """
-        If we are inside the *head* of a declaration (function/class) and the current
-        token looks like an identifier with a plausible next token ( '(' or ':' or '{' ),
-        assign the name to the pending construct (only once).
-        """
-        if cur.kind not in (NodeKind.FUNCTION, NodeKind.CLASS):
-            return
-        if cur.name:  # already captured
-            return
-
-        if not self._token_is_identifier(ev, lang):
-            return
-
-        name = self._token_text(ev)
-        if not name:
-            return
-
-        # A light guard: many grammars will have '(' or similar immediately after the name
-        if next_token_type in _DECL_HEAD_STOP_TOKENS or next_token_type is None:
-            cur.name = name
 
     def _extract_qualified_name(self, events_window: List[CstEvent], fm: FileMeta) -> Optional[str]:
         """
