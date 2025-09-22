@@ -179,9 +179,10 @@ class PythonLibCstDriver(ParserDriver):
 
         # Parse & attach metadata once; cache the provider map
         try:
-            module = cst.parse_module(text)
-            wrapper = MetadataWrapper(module)
+            parsed_module = cst.parse_module(text)
+            wrapper = MetadataWrapper(parsed_module)
             positions = wrapper.resolve(PositionProvider)
+            module = wrapper.module  # use metadata-annotated node
         except Exception as e:
             raise ParserError(code="PARSE_ERROR", message="libcst.parse_module failed", detail=str(e))
 
@@ -217,48 +218,36 @@ class PythonLibCstDriver(ParserDriver):
         def _extract_name_token(node: cst.CSTNode) -> Optional[CstEvent]:
             """
             Extract a TOKEN event for the name of a declaration node (FunctionDef, ClassDef, etc.)
-            Returns a CstEvent with the correct position of just the name token, not the whole node.
+            using the precise CodeRange from libcst's metadata.
             """
-            name_node: Optional[cst.CSTNode] = None
-
-            # Extract the name based on node type
-            if isinstance(node, cst.FunctionDef):
+            name_node: Optional[cst.CSTNode]
+            if isinstance(node, (cst.FunctionDef, cst.ClassDef)):
                 name_node = node.name
-            elif isinstance(node, cst.ClassDef):
-                name_node = node.name
-            elif hasattr(node, "name") and isinstance(node.name, cst.CSTNode):
-                name_node = node.name
+            elif hasattr(node, "name") and isinstance(getattr(node, "name"), cst.CSTNode):
+                name_node = node.name  # type: ignore[assignment]
+            else:
+                name_node = None
 
             if name_node is None:
                 return None
 
-            code_range: Optional[CodeRange] = None
             try:
-                code_range = positions[name_node]
-            except Exception:
-                code_range = None
-
-            if code_range is None:
-                try:
-                    code_range = positions[node]
-                except Exception:
-                    return None
-
-            try:
-                byte_start = indexer.to_byte_offset(code_range.start.line, code_range.start.column)
-                byte_end = indexer.to_byte_offset(code_range.end.line, code_range.end.column)
-                line_start = code_range.start.line
-                line_end = code_range.end.line
+                rng: CodeRange = positions[name_node]
             except Exception:
                 return None
 
+            byte_start = indexer.to_byte_offset(rng.start.line, rng.start.column)
+            byte_end = indexer.to_byte_offset(rng.end.line, rng.end.column)
+            if byte_end < byte_start:
+                byte_end = byte_start
+
             return CstEvent(
                 kind=CstEventKind.TOKEN,
-                type="Name",
+                type=type(name_node).__name__,
                 byte_start=byte_start,
-                byte_end=byte_end if byte_end >= byte_start else byte_start,
-                line_start=line_start,
-                line_end=line_end if line_end >= line_start else line_start,
+                byte_end=byte_end,
+                line_start=rng.start.line,
+                line_end=rng.end.line,
             )
 
         while stack:
