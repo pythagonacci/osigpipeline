@@ -20,8 +20,8 @@ from .dfg import build_dfg  # optional
 from .effects import build_effects  # optional
 from .ucg_store import UcgStore
 # If you added these drivers; otherwise, swap in your actual parser integrations.
-from .python_driver import PythonDriver  # type: ignore
-from .ts_driver import TsDriver          # type: ignore
+from .python_driver import PythonLibCstDriver as PythonDriver  # type: ignore
+from .ts_driver import TSTreeSitterDriver as TsDriver          # type: ignore
 
 # CST event types (imported for type hints only; not strictly required here)
 # from .parser_registry import ParseStream  # type: ignore

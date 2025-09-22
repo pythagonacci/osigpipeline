@@ -6,7 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .discovery import discover_files, DiscoveryConfig, AnomalySink
+from .discovery import iter_discovered_files, DiscoveryConfig, AnomalySink
 from .api import build_ucg_for_files, Step1Config, Step1Summary
 
 
@@ -27,7 +27,7 @@ def run_step1_on_path(
     root = Path(root)
     out_dir = Path(out_dir)
     sink = AnomalySink()
-    files = list(discover_files(root, discovery or DiscoveryConfig(), sink=sink))
+    files = list(iter_discovered_files(root, discovery or DiscoveryConfig(), sink=sink))
 
     # Step-1
     summary: Step1Summary = build_ucg_for_files(

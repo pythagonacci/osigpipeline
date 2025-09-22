@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass
 from typing import Iterator, List, Optional, Tuple
 
@@ -128,6 +129,21 @@ class PythonLibCstDriver(ParserDriver):
             )
         return self._info
 
+    def parse(self, file: FileMeta):
+        """Parse a file and return a ParseStream."""
+        from .parser_registry import ParseStream, DriverInfo
+        
+        info = self.info()
+        start = time.perf_counter()
+        
+        try:
+            events = self.parse_to_events(file)
+            elapsed = time.perf_counter() - start
+            return ParseStream(file=file, driver=info, events=events, elapsed_s=elapsed, ok=True)
+        except Exception as e:
+            elapsed = time.perf_counter() - start
+            return ParseStream(file=file, driver=info, events=None, elapsed_s=elapsed, ok=False, error=str(e))
+
     def parse_to_events(self, file: FileMeta) -> Iterator[CstEvent]:
         if _LIBCST_IMPORT_ERROR is not None:
             raise ParserError(
@@ -177,19 +193,25 @@ class PythonLibCstDriver(ParserDriver):
         def _emit_for_node(n: cst.CSTNode, kind: CstEventKind) -> CstEvent:
             try:
                 rng: CodeRange = positions[n]
-            except Exception as e:
-                raise ParserError(code="POSITION_MISSING", message="No position for CST node", detail=str(e))
+                b_start = indexer.to_byte_offset(rng.start.line, rng.start.column)
+                b_end = indexer.to_byte_offset(rng.end.line, rng.end.column)
+                line_start = rng.start.line
+                line_end = rng.end.line
+            except Exception:
+                # Fallback for nodes without position information
+                b_start = 0
+                b_end = len(text)
+                line_start = 1
+                line_end = len(text.splitlines())
 
-            b_start = indexer.to_byte_offset(rng.start.line, rng.start.column)
-            b_end = indexer.to_byte_offset(rng.end.line, rng.end.column)
             ntype = n.__class__.__name__
             return CstEvent(
                 kind=kind,
                 type=ntype,
                 byte_start=b_start,
                 byte_end=b_end if b_end >= b_start else b_start,
-                line_start=rng.start.line,
-                line_end=rng.end.line if rng.end.line >= rng.start.line else rng.start.line,
+                line_start=line_start,
+                line_end=line_end if line_end >= line_start else line_start,
             )
 
         while stack:

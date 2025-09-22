@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Tuple
 
@@ -47,8 +48,10 @@ def _load_language(name: str):
     # 2) Individual grammar wheels
     if name == "javascript":
         try:
+            import tree_sitter
             mod = importlib.import_module("tree_sitter_javascript")
-            lang_obj = getattr(mod, "language")()  # type: ignore[attr-defined]
+            capsule = getattr(mod, "language")()  # type: ignore[attr-defined]
+            lang_obj = tree_sitter.Language(capsule)  # Convert PyCapsule to Language
             version = getattr(mod, "__version__", "unknown")
             return lang_obj, "tree-sitter-javascript", version
         except Exception:
@@ -56,9 +59,10 @@ def _load_language(name: str):
 
     if name == "typescript":
         try:
+            import tree_sitter
             mod = importlib.import_module("tree_sitter_typescript")
-            get_lang = getattr(mod, "get_language")  # type: ignore[attr-defined]
-            lang_obj = get_lang("typescript")  # type: ignore[call-arg]
+            capsule = getattr(mod, "language_typescript")  # type: ignore[attr-defined]
+            lang_obj = tree_sitter.Language(capsule)  # Convert PyCapsule to Language
             version = getattr(mod, "__version__", "unknown")
             return lang_obj, "tree-sitter-typescript", version
         except Exception:
@@ -66,9 +70,10 @@ def _load_language(name: str):
 
     if name == "tsx":
         try:
+            import tree_sitter
             mod = importlib.import_module("tree_sitter_typescript")
-            get_lang = getattr(mod, "get_language")  # type: ignore[attr-defined]
-            lang_obj = get_lang("tsx")  # type: ignore[call-arg]
+            capsule = getattr(mod, "language_tsx")  # type: ignore[attr-defined]
+            lang_obj = tree_sitter.Language(capsule)  # Convert PyCapsule to Language
             version = getattr(mod, "__version__", "unknown")
             return lang_obj, "tree-sitter-tsx", version
         except Exception:
@@ -176,6 +181,21 @@ class TSTreeSitterDriver(ParserDriver):
         if self._info is None:
             self._setup_parser()
         return self._info  # type: ignore[return-value]
+
+    def parse(self, file: FileMeta):
+        """Parse a file and return a ParseStream."""
+        from .parser_registry import ParseStream, DriverInfo
+        
+        info = self.info()
+        start = time.perf_counter()
+        
+        try:
+            events = self.parse_to_events(file)
+            elapsed = time.perf_counter() - start
+            return ParseStream(file=file, driver=info, events=events, elapsed_s=elapsed, ok=True)
+        except Exception as e:
+            elapsed = time.perf_counter() - start
+            return ParseStream(file=file, driver=info, events=None, elapsed_s=elapsed, ok=False, error=str(e))
 
     def parse_to_events(self, file: FileMeta) -> Iterator[CstEvent]:
         if self._init_error:
@@ -324,7 +344,7 @@ class TSTreeSitterDriver(ParserDriver):
 
         self._parser = TSParser()  # type: ignore[call-arg]
         try:
-            self._parser.set_language(lang_obj)
+            self._parser.language = lang_obj
         except Exception as e:
             # leave parser unset to avoid partial state
             self._parser = None
