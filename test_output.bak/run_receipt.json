@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
-  "nodes_rows": 0,
-  "edges_rows": 0,
+  "nodes_rows": 43,
+  "edges_rows": 41,
   "anomaly_rows": 0,
   "cfg_block_rows": 0,
   "cfg_edge_rows": 0,
@@ -10,14 +10,14 @@
   "symbol_rows": 0,
   "alias_rows": 0,
   "effect_rows": 0,
-  "bytes_written": 0,
+  "bytes_written": 16039,
   "compression": {
     "algorithm": "zstd",
     "level": 7
   },
   "files": {
-    "nodes": 0,
-    "edges": 0,
+    "nodes": 1,
+    "edges": 1,
     "anomalies": 0,
     "cfg_blocks": 0,
     "cfg_edges": 0,
@@ -27,13 +27,19 @@
     "aliases": 0,
     "effects": 0
   },
-  "created_at_epoch": 1758502079,
-  "created_at_iso": "2025-09-22T00:47:59Z",
-  "transaction_log": [],
+  "created_at_epoch": 1758509454,
+  "created_at_iso": "2025-09-22T02:50:54Z",
+  "transaction_log": [
+    "wrote_nodes:ucg_nodes_00000.parquet",
+    "wrote_edges:ucg_edges_00000.parquet"
+  ],
   "run_meta": {
     "repo_path": "test_repo",
     "test_run": true
   },
   "step": "step1_ucg",
-  "integrity": {}
+  "integrity": {
+    "nodes/ucg_nodes_00000.parquet": "3e70aecc7a5e15319d6e49d6fd1f06e8",
+    "edges/ucg_edges_00000.parquet": "36a14681200d54ec3ae72b48e8418d39"
+  }
 }

@@ -7,7 +7,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 0
+      "row_count": 43
     },
     "edges": {
       "path": "edges/*.parquet",
@@ -16,7 +16,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 0
+      "row_count": 41
     },
     "anomalies": {
       "path": "anomalies/*.parquet",
