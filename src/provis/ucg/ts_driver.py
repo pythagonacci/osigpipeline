@@ -80,7 +80,7 @@ def _load_language(name: str):
             pass
 
     if name == "jsx":
-        # Many builds don’t ship a separate "jsx"—JS grammar usually handles JSX.
+        # Many builds don't ship a separate "jsx"—JS grammar usually handles JSX.
         js = _load_language("javascript")
         if js is not None:
             lang_obj, gname, version = js
@@ -157,7 +157,7 @@ class TSTreeSitterDriver(ParserDriver):
       - Lazy initialization so import/setup errors are consistently surfaced via info()/parse.
     """
 
-    # Extra guardrail beyond discovery’s size checks
+    # Extra guardrail beyond discovery's size checks
     MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024  # 100 MiB
 
     def __init__(self, lang: Language) -> None:
@@ -284,57 +284,97 @@ class TSTreeSitterDriver(ParserDriver):
                                     id(x)))
             return out
 
+        # ---------------------------------------------------------------------
+        # Balanced traversal via TreeCursor (guarantees ENTER/EXIT for all nodes)
+        # ---------------------------------------------------------------------
+
         def is_leaf(n) -> bool:
             try:
                 return int(getattr(n, "child_count", 0)) == 0
             except Exception:
                 return True
 
-        # Iterative DFS
-        stack: List[Tuple[object, List[object], int]] = [(root, children_in_order(root), 0)]
-
-        while stack:
-            node, kids, state = stack.pop()
-            if state == 0:
-                # ENTER
-                yield emit(node, CstEventKind.ENTER)
-
-                if is_leaf(node):
-                    yield emit(node, CstEventKind.TOKEN)
-                    stack.append((node, kids, 2))
-                    continue
-                
-                # Special case: emit identifier tokens for function/class names
-                node_type = node.type
-                if node_type in ("function_declaration", "method_definition", "class_declaration"):
-                    # Look for identifier child (function/class name)
-                    for child in kids:
-                        if child.type in ("identifier", "property_identifier"):
-                            yield emit(child, CstEventKind.TOKEN)
+        def maybe_preemit_decl_name(n):
+            """
+            For declarations, emit the identifier/property_identifier token early
+            so the normalizer can capture names before we dive into params/body.
+            (The identifier will still later emit its own ENTER/TOKEN/EXIT as a leaf.)
+            """
+            ntype = getattr(n, "type", None)
+            if ntype in (
+                "function_declaration",
+                "function_expression",
+                "method_definition",
+                "class_declaration",
+                "arrow_function",
+            ):
+                try:
+                    cc = int(getattr(n, "child_count", 0))
+                except Exception:
+                    cc = 0
+                for i in range(cc):
+                    try:
+                        ch = n.child(i)
+                        if ch is None:
+                            continue
+                        ctype = getattr(ch, "type", None)
+                        if ctype in ("identifier", "property_identifier"):
+                            # Single token emission (no ENTER/EXIT wrapper) as before
+                            yield emit(ch, CstEventKind.TOKEN)
                             break
+                    except Exception:
+                        continue
 
-                # EXIT after children
-                stack.append((node, kids, 2))
-                for ch in reversed(kids):
-                    stack.append((ch, children_in_order(ch), 0))
-            else:
-                yield emit(node, CstEventKind.EXIT)
+        cursor = root.walk()
 
-        # After traversal, surface syntax errors (no silent success)
-        if error_nodes:
-            details = "; ".join(
-                [f"bytes {s}-{e}: {msg}" for s, e, msg in error_nodes[:5]]
-            )
-            if len(error_nodes) > 5:
-                details += f" (and {len(error_nodes) - 5} more)"
-            first = error_nodes[0]
-            raise ParserError(
-                code="SYNTAX_ERRORS",
-                message=f"Found {len(error_nodes)} syntax errors in {file.path}",
-                detail=details,
-                byte_start=first[0],
-                byte_end=first[1],
-            )
+        while True:
+            node = cursor.node
+
+            # ENTER the current node
+            yield emit(node, CstEventKind.ENTER)
+
+            # Optional: name token pre-emit for decls (kept for backward compat)
+            for tok in maybe_preemit_decl_name(node):
+                yield tok
+
+            # If leaf, also emit a TOKEN now
+            if is_leaf(node):
+                yield emit(node, CstEventKind.TOKEN)
+
+            # If we can go down, do so (post-order EXIT will be handled on unwind)
+            if cursor.goto_first_child():
+                continue
+
+            # No children (or already finished children): EXIT this node, then
+            # walk to next sibling; if none, keep bubbling up emitting EXITs
+            yield emit(node, CstEventKind.EXIT)
+
+            while True:
+                if cursor.goto_next_sibling():
+                    # Next sibling will ENTER on the next loop iteration
+                    break
+                if not cursor.goto_parent():
+                    # We just finished the root. Surface syntax issues (if any),
+                    # then end the generator.
+                    if error_nodes:
+                        details = "; ".join(
+                            [f"bytes {s}-{e}: {msg}" for s, e, msg in error_nodes[:5]]
+                        )
+                        if len(error_nodes) > 5:
+                            details += f" (and {len(error_nodes) - 5} more)"
+                        first = error_nodes[0]
+                        raise ParserError(
+                            code="SYNTAX_ERRORS",
+                            message=f"Found {len(error_nodes)} syntax errors in {file.path}",
+                            detail=details,
+                            byte_start=first[0],
+                            byte_end=first[1],
+                        )
+                    return  # done
+
+                # We climbed up because there was no next sibling at this level:
+                # that means we just finished the parent's last child → EXIT parent.
+                yield emit(cursor.node, CstEventKind.EXIT)
 
     # ---- internals ------------------------------------------------------------
 
