@@ -10,7 +10,7 @@
   "symbol_rows": 0,
   "alias_rows": 0,
   "effect_rows": 0,
-  "bytes_written": 16039,
+  "bytes_written": 16029,
   "compression": {
     "algorithm": "zstd",
     "level": 7
@@ -27,8 +27,8 @@
     "aliases": 0,
     "effects": 0
   },
-  "created_at_epoch": 1758509454,
-  "created_at_iso": "2025-09-22T02:50:54Z",
+  "created_at_epoch": 1758510478,
+  "created_at_iso": "2025-09-22T03:07:58Z",
   "transaction_log": [
     "wrote_nodes:ucg_nodes_00000.parquet",
     "wrote_edges:ucg_edges_00000.parquet"
@@ -39,7 +39,7 @@
   },
   "step": "step1_ucg",
   "integrity": {
-    "nodes/ucg_nodes_00000.parquet": "3e70aecc7a5e15319d6e49d6fd1f06e8",
-    "edges/ucg_edges_00000.parquet": "36a14681200d54ec3ae72b48e8418d39"
+    "nodes/ucg_nodes_00000.parquet": "2b33234ad00830f64ee6b822a7874afa",
+    "edges/ucg_edges_00000.parquet": "2d99a656ee6956f273a945995d99e9b2"
   }
 }
