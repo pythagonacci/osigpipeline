@@ -244,7 +244,7 @@ class Normalizer:
 
         scope_stack: List[_Scope] = []
         pend_stack: List[_PendingConstruct] = []
-        pending_scopes: Dict[int, _Scope] = {}  # key = byte_start → scope (activated at ENTER)
+        pending_scopes: Dict[int, List[_Scope]] = {}  # key = byte_start → stack of scopes (handles shared starts)
 
         module_emitted = False
 
@@ -300,7 +300,7 @@ class Normalizer:
                     scope = _Scope(node_id=mod_id, kind=NodeKind.MODULE, name=self._module_name_from_path(fm.path),
                                    parent_id=file_id, byte_start=ev.byte_start)
                     scope_stack.append(scope)
-                    pending_scopes[ev.byte_start] = scope
+                    pending_scopes.setdefault(ev.byte_start, []).append(scope)
                     module_emitted = True
 
                 if nkind in (NodeKind.CLASS, NodeKind.FUNCTION):
@@ -308,7 +308,7 @@ class Normalizer:
                     parent_id = scope_stack[-1].node_id if scope_stack else (file_id if module_emitted else file_id)
                     scope = _Scope(node_id=node_id, kind=nkind, name=None, parent_id=parent_id, byte_start=ev.byte_start)
                     scope_stack.append(scope)
-                    pending_scopes[ev.byte_start] = scope
+                    pending_scopes.setdefault(ev.byte_start, []).append(scope)
 
                 # call placeholder (we’ll emit CALL edge at EXIT)
                 if adapter.is_call(ev.type):
@@ -361,7 +361,12 @@ class Normalizer:
                 # -----------------------------------------------------------------------
 
                 # If this EXIT closes an active scope, finalize it now
-                maybe_scope = pending_scopes.pop(cur.byte_start, None)
+                scope_stack_for_start = pending_scopes.get(cur.byte_start)
+                maybe_scope = None
+                if scope_stack_for_start:
+                    maybe_scope = scope_stack_for_start.pop()
+                    if not scope_stack_for_start:
+                        pending_scopes.pop(cur.byte_start, None)
                 if maybe_scope is not None:
                     # Emit the node for the scope with full provenance (end bytes)
                     nrow = self._node_row_with_start_id(
@@ -373,8 +378,13 @@ class Normalizer:
                     erow = self._edge_row(fm, info, EdgeKind.DEFINES, src_id=parent_id, dst_id=maybe_scope.node_id, ev=ev, extra={})
                     yield ("edge", erow)
                     # pop from scope stack (must match)
-                    if scope_stack and scope_stack[-1].byte_start == maybe_scope.byte_start:
+                    if scope_stack and scope_stack[-1] is maybe_scope:
                         scope_stack.pop()
+                    else:
+                        for idx in range(len(scope_stack) - 1, -1, -1):
+                            if scope_stack[idx] is maybe_scope:
+                                scope_stack.pop(idx)
+                                break
 
                 # Effect carriers
                 if cur.kind == NodeKind.EFFECT_CARRIER and self.cfg.emit_effect_carriers:
