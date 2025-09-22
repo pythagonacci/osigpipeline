@@ -160,7 +160,7 @@ def build_ucg_for_files(
         # Guards
         if not fm.is_text:
             sink.emit(Anomaly(
-                path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.SKIPPED,
+                path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.BINARY_FILE,
                 severity=Severity.INFO, detail="binary-or-nontext",
             ))
             continue
@@ -252,7 +252,7 @@ def build_ucg_for_files(
             store.flush()
             # push anomalies collected so far
             try:
-                store.append_anomalies(sink.drain())
+                store.append_anomalies(list(sink.items()))
             except Exception:
                 pass
 
@@ -260,7 +260,7 @@ def build_ucg_for_files(
     flush_buffers(force=True)
     store.flush()
     try:
-        store.append_anomalies(sink.drain())
+        store.append_anomalies(list(sink.items()))
     except Exception:
         pass
 

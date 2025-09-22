@@ -48,10 +48,9 @@ def _load_language(name: str):
     # 2) Individual grammar wheels
     if name == "javascript":
         try:
-            import tree_sitter
             mod = importlib.import_module("tree_sitter_javascript")
-            capsule = getattr(mod, "language")()  # type: ignore[attr-defined]
-            lang_obj = tree_sitter.Language(capsule)  # Convert PyCapsule to Language
+            # language() returns a Language object in modern wheels
+            lang_obj = getattr(mod, "language")()  # type: ignore[attr-defined]
             version = getattr(mod, "__version__", "unknown")
             return lang_obj, "tree-sitter-javascript", version
         except Exception:
@@ -59,10 +58,8 @@ def _load_language(name: str):
 
     if name == "typescript":
         try:
-            import tree_sitter
             mod = importlib.import_module("tree_sitter_typescript")
-            capsule = getattr(mod, "language_typescript")  # type: ignore[attr-defined]
-            lang_obj = tree_sitter.Language(capsule)  # Convert PyCapsule to Language
+            lang_obj = getattr(mod, "language_typescript")()  # type: ignore[attr-defined]
             version = getattr(mod, "__version__", "unknown")
             return lang_obj, "tree-sitter-typescript", version
         except Exception:
@@ -70,10 +67,8 @@ def _load_language(name: str):
 
     if name == "tsx":
         try:
-            import tree_sitter
             mod = importlib.import_module("tree_sitter_typescript")
-            capsule = getattr(mod, "language_tsx")  # type: ignore[attr-defined]
-            lang_obj = tree_sitter.Language(capsule)  # Convert PyCapsule to Language
+            lang_obj = getattr(mod, "language_tsx")()  # type: ignore[attr-defined]
             version = getattr(mod, "__version__", "unknown")
             return lang_obj, "tree-sitter-tsx", version
         except Exception:
@@ -384,7 +379,11 @@ class TSTreeSitterDriver(ParserDriver):
         primary_name = self._select_grammar_name(self._lang)
         loaded = self._load_language_with_fallbacks(primary_name, self._lang)
         if loaded is None:
-            raise ParserError(code="GRAMMAR_LOAD_FAILED", message=f"Could not load grammar: {primary_name}")
+            raise ParserError(
+                code="GRAMMAR_LOAD_FAILED",
+                message=f"Could not load grammar: {primary_name}",
+                detail="Tried aggregator (tree_sitter_languages) and individual wheels; none matched"
+            )
 
         lang_obj, grammar_name, version = loaded
         grammar_sha = hashlib.blake2b(
@@ -393,11 +392,26 @@ class TSTreeSitterDriver(ParserDriver):
 
         self._parser = TSParser()  # type: ignore[call-arg]
         try:
-            self._parser.language = lang_obj
+            # canonical API
+            self._parser.set_language(lang_obj)  # type: ignore[attr-defined]
         except Exception as e:
-            # leave parser unset to avoid partial state
             self._parser = None
-            raise ParserError(code="PARSER_INIT_FAILED", message="Failed to set Tree-sitter language", detail=str(e))
+            raise ParserError(
+                code="PARSER_INIT_FAILED",
+                message="Failed to set Tree-sitter language via set_language",
+                detail=str(e),
+            )
+
+        # Smoke test: parse an empty buffer to ensure language is accepted
+        try:
+            self._parser.parse(b"")
+        except Exception as e:
+            self._parser = None
+            raise ParserError(
+                code="PARSER_INIT_FAILED",
+                message="Tree-sitter parser smoke test failed",
+                detail=str(e),
+            )
 
         self._info = DriverInfo(
             language=self._lang,
