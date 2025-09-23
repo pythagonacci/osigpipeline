@@ -153,16 +153,27 @@ class _Adapter:
             self.decorator_types = {"Decorator", "Decorators"}
             self.identifier_tokens = {"Name", "Attribute"}
             self.string_tokens = {"SimpleString"}
+            self.class_types_lower = {t.lower() for t in self.class_types}
+            self.function_types_lower = {t.lower() for t in self.function_types}
         else:  # JS/TS/JSX/TSX
             self.module_types = {"program"}
             self.class_types = {"class_declaration"}
-            self.function_types = {"function_declaration", "function_expression", "method_definition", "arrow_function"}
+            self.function_types = {
+                "function_declaration",
+                "function_expression",
+                "method_definition",
+                "arrow_function",
+                "generator_function_declaration",
+                "generator_function",
+            }
             self.import_types = {"import_statement", "import_declaration"}
             self.export_types = {"export_statement", "export_clause", "export_assignment"}
             self.call_types = {"call_expression", "new_expression"}
             self.decorator_types = {"decorator"}
             self.identifier_tokens = {"identifier", "property_identifier", "shorthand_property_identifier", "private_property_identifier"}
             self.string_tokens = {"string", "string_fragment", "string_literal", "template_string"}
+            self.class_types_lower = {t.lower() for t in self.class_types}
+            self.function_types_lower = {t.lower() for t in self.function_types}
 
     def is_module(self, t: str) -> bool: return t in self.module_types
     def is_class(self, t: str) -> bool: return t in self.class_types
@@ -173,6 +184,32 @@ class _Adapter:
     def is_decorator(self, t: str) -> bool: return t in self.decorator_types
     def is_identifier_token(self, t: str) -> bool: return t in self.identifier_tokens
     def is_string_token(self, t: str) -> bool: return t in self.string_tokens
+
+    def looks_like_function(self, node_type: str) -> bool:
+        lowered = node_type.lower()
+        if not lowered:
+            return False
+        if node_type in self.function_types or lowered in getattr(self, "function_types_lower", set()):
+            return True
+        if lowered in {"constructor"}:
+            return True
+        if "function" in lowered or "method" in lowered or "lambda" in lowered or "arrow" in lowered:
+            if any(bad in lowered for bad in ("call", "argument", "type", "signature", "expr", "expression")):
+                return False
+            return True
+        return False
+
+    def looks_like_class(self, node_type: str) -> bool:
+        lowered = node_type.lower()
+        if not lowered:
+            return False
+        if node_type in self.class_types or lowered in getattr(self, "class_types_lower", set()):
+            return True
+        if "class" in lowered:
+            if any(bad in lowered for bad in ("class_body", "class_heritage", "class_im")):
+                return False
+            return True
+        return False
 
 
 _ADAPTERS: Dict[Language, _Adapter] = {
@@ -194,6 +231,7 @@ class _Scope:
     name: Optional[str]
     parent_id: Optional[str]
     byte_start: int
+    params: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -203,7 +241,7 @@ class _PendingConstruct:
     byte_start: int
     line_start: int
     name: Optional[str] = None
-    extra: Dict[str, str] = field(default_factory=dict)
+    extra: Dict[str, object] = field(default_factory=dict)
     want_edge_from: Optional[str] = None  # For call edges
 
 
@@ -248,6 +286,7 @@ class Normalizer:
         scope_stack: List[_Scope] = []
         pend_stack: List[_PendingConstruct] = []
         pending_scopes: Dict[int, _Scope] = {}
+        pending_decorators: List[Tuple[str, CstEvent, Dict[str, object]]] = []
         
         # NEW: Track pending name tokens that arrive before their declaration's ENTER is processed
         pending_name_token: Optional[Tuple[CstEvent, str]] = None
@@ -262,21 +301,29 @@ class Normalizer:
             # Process TOKEN events
             if ev.kind == CstEventKind.TOKEN:
                 self._token_window.append(ev)
-                
+
+                token_name: Optional[str] = None
+                if adapter.is_identifier_token(ev.type):
+                    token_name = self._safe_token_name(ev, fm)
+
+                self._update_function_param_capture(
+                    ev, adapter, fm, pend_stack, pending_scopes, token_name
+                )
+
                 # Check if this is an identifier token
                 if adapter.is_identifier_token(ev.type):
-                    # Extract the token name
-                    token_name = self._safe_token_name(ev, fm)
                     if token_name:
-                        # If we have a pending construct at this exact byte position, 
+                        # If we have a pending construct at this exact byte position,
                         # this is likely its name token
                         if pend_stack:
                             cur = pend_stack[-1]
                             # Check if this token immediately follows the construct's ENTER
                             # (within a small byte range to account for whitespace)
-                            if (cur.kind in (NodeKind.FUNCTION, NodeKind.CLASS) and 
-                                cur.name is None and
-                                abs(ev.byte_start - cur.byte_start) <= 50):  # reasonable proximity
+                            if (
+                                cur.kind in (NodeKind.FUNCTION, NodeKind.CLASS)
+                                and cur.name is None
+                                and abs(ev.byte_start - cur.byte_start) <= 50
+                            ):  # reasonable proximity
                                 cur.name = token_name
                                 # Also update the scope if it exists
                                 if scope_stack and scope_stack[-1].byte_start == cur.byte_start:
@@ -284,7 +331,7 @@ class Normalizer:
                         else:
                             # Store as potentially pending name token for next ENTER
                             pending_name_token = (ev, token_name)
-                
+
                 # Process string tokens
                 elif adapter.is_string_token(ev.type):
                     if pend_stack:
@@ -352,6 +399,34 @@ class Normalizer:
                         scope = _Scope(node_id=node_id, kind=nkind, name=cur.name, parent_id=parent_id, byte_start=ev.byte_start)
                         scope_stack.append(scope)
                         pending_scopes[ev.byte_start] = scope
+                        if nkind == NodeKind.FUNCTION:
+                            scope.params = []
+                            lower_type = ev.type.lower()
+                            is_lambda_like = "lambda" in lower_type
+                            is_arrow_like = "arrow" in lower_type
+                            cur.extra["param_names"] = []
+                            cur.extra["param_capture_active"] = True
+                            cur.extra["param_capture_paren"] = 0
+                            cur.extra["param_capture_started"] = False
+                            cur.extra["param_capture_lambda"] = bool(is_lambda_like or is_arrow_like)
+                            cur.extra["param_expect_name"] = bool(cur.extra["param_capture_lambda"])
+                        if pending_decorators:
+                            still_pending: List[Tuple[str, CstEvent, Dict[str, object]]] = []
+                            for deco_id, deco_ev, deco_extra in pending_decorators:
+                                if deco_ev.byte_start <= ev.byte_start:
+                                    erow = self._edge_row(
+                                        fm,
+                                        info,
+                                        EdgeKind.DECORATES,
+                                        src_id=deco_id,
+                                        dst_id=node_id,
+                                        ev=deco_ev,
+                                        extra=dict(deco_extra),
+                                    )
+                                    yield ("edge", erow)
+                                else:
+                                    still_pending.append((deco_id, deco_ev, deco_extra))
+                            pending_decorators[:] = still_pending
                     else:
                         # Demote misclassified construct to a non-scope BLOCK to avoid duplicates
                         cur.kind = NodeKind.BLOCK
@@ -364,9 +439,10 @@ class Normalizer:
                         if s.kind == NodeKind.FUNCTION:
                             caller_id = s.node_id
                             break
-                    if caller_id is None:
-                        caller_id = scope_stack[-1].node_id if scope_stack else file_id
                     cur.want_edge_from = caller_id
+                    if caller_id is None:
+                        fallback_id = scope_stack[-1].node_id if scope_stack else file_id
+                        cur.extra["call_src_fallback"] = fallback_id
                     cur.extra["call_like"] = "1"
 
                 pend_stack.append(cur)
@@ -400,6 +476,18 @@ class Normalizer:
                     if scope_stack and scope_stack[-1].byte_start == cur.byte_start:
                         if cur.name and not scope_stack[-1].name:
                             scope_stack[-1].name = cur.name
+                        if (
+                            scope_stack[-1].kind == NodeKind.FUNCTION
+                            and "param_names" in cur.extra
+                            and isinstance(cur.extra.get("param_names"), list)
+                        ):
+                            names = [
+                                str(p)
+                                for p in cur.extra.get("param_names", [])
+                                if isinstance(p, str) and p
+                            ]
+                            scope_stack[-1].params = names
+                        pending_scopes.pop(scope_stack[-1].byte_start, None)
                         # Normal fast-path finalization (top matches)
                         for item in self._finalize_scope_at_index(
                             len(scope_stack) - 1,
@@ -423,6 +511,18 @@ class Normalizer:
                             # Carry over the discovered name if we have one
                             if cur.name and not scope_stack[match_idx].name:
                                 scope_stack[match_idx].name = cur.name
+                            if (
+                                scope_stack[match_idx].kind == NodeKind.FUNCTION
+                                and "param_names" in cur.extra
+                                and isinstance(cur.extra.get("param_names"), list)
+                            ):
+                                names = [
+                                    str(p)
+                                    for p in cur.extra.get("param_names", [])
+                                    if isinstance(p, str) and p
+                                ]
+                                scope_stack[match_idx].params = names
+                            pending_scopes.pop(scope_stack[match_idx].byte_start, None)
                             for item in self._finalize_scope_at_index(
                                 match_idx,
                                 scope_stack=scope_stack,
@@ -464,22 +564,50 @@ class Normalizer:
 
                 # Effect carriers
                 if cur.kind == NodeKind.EFFECT_CARRIER and self.cfg.emit_effect_carriers:
+                    deco_extra = {"type": cur.type_name, **cur.extra}
+                    deco_id = self._start_based_node_id(fm, NodeKind.EFFECT_CARRIER, cur.byte_start)
                     nrow = self._node_row_with_start_id(
-                        fm, info, NodeKind.EFFECT_CARRIER,
-                        self._start_based_node_id(fm, NodeKind.EFFECT_CARRIER, cur.byte_start),
-                        name=cur.name, ev=ev, extra={"type": cur.type_name, **cur.extra}
+                        fm,
+                        info,
+                        NodeKind.EFFECT_CARRIER,
+                        deco_id,
+                        name=cur.name,
+                        ev=ev,
+                        extra=deco_extra,
                     )
                     yield ("node", nrow)
-                    if scope_stack:
-                        erow = self._edge_row(fm, info, EdgeKind.DECORATES, src_id=nrow.id, dst_id=scope_stack[-1].node_id, ev=ev, extra={})
+                    target_scope = None
+                    for scope in reversed(scope_stack):
+                        if scope.kind not in (NodeKind.FUNCTION, NodeKind.CLASS):
+                            continue
+                        if cur.byte_start <= scope.byte_start:
+                            target_scope = scope
+                            break
+                    if target_scope is not None:
+                        erow = self._edge_row(
+                            fm,
+                            info,
+                            EdgeKind.DECORATES,
+                            src_id=deco_id,
+                            dst_id=target_scope.node_id,
+                            ev=ev,
+                            extra=dict(deco_extra),
+                        )
                         yield ("edge", erow)
+                    else:
+                        pending_decorators.append((deco_id, ev, dict(deco_extra)))
 
                 # Fallback emission: if this was recognized as a function/class by adapter,
                 # but no scope was opened (cur.kind got demoted to BLOCK), still emit a node
                 # and a defines edge under the nearest parent scope (module/class) or file.
                 if cur.kind == NodeKind.BLOCK:
-                    if adapter.is_function(cur.type_name) or adapter.is_class(cur.type_name):
-                        inferred_kind = NodeKind.FUNCTION if adapter.is_function(cur.type_name) else NodeKind.CLASS
+                    if adapter.is_function(cur.type_name) or adapter.looks_like_function(cur.type_name):
+                        inferred_kind = NodeKind.FUNCTION
+                    elif adapter.is_class(cur.type_name) or adapter.looks_like_class(cur.type_name):
+                        inferred_kind = NodeKind.CLASS
+                    else:
+                        inferred_kind = None
+                    if inferred_kind is not None:
                         node_id = self._start_based_node_id(fm, inferred_kind, cur.byte_start)
                         parent_id = scope_stack[-1].node_id if scope_stack else file_id
                         nrow = self._node_row_with_start_id(
@@ -505,12 +633,21 @@ class Normalizer:
                     callee = qname or cur.name or "<unknown>"
                     sym = self._create_symbol_node(fm, info, callee, ev, "callee")
                     yield ("node", sym)
-                    src_id = cur.want_edge_from or (scope_stack[-1].node_id if scope_stack else file_id)
+                    src_id = cur.want_edge_from
+                    caller_extra: Dict[str, object] = {}
+                    if src_id is None:
+                        fallback_id = cur.extra.get("call_src_fallback")
+                        if not isinstance(fallback_id, str):
+                            fallback_id = scope_stack[-1].node_id if scope_stack else file_id
+                        src_id = fallback_id
+                        caller_extra["caller_fallback"] = "true"
                     # Attach a lightweight argument stub for Step-2 alignment (best-effort)
                     args_stub = self._build_args_stub(fm, ev)
+                    edge_extra: Dict[str, object] = {"callee": callee, "args_model_stub": args_stub}
+                    edge_extra.update(caller_extra)
                     yield ("edge", self._edge_row(
                         fm, info, EdgeKind.CALLS, src_id=src_id, dst_id=sym.id, ev=ev,
-                        extra={"callee": callee, "args_model_stub": args_stub}
+                        extra=edge_extra
                     ))
 
         # Synthesize endings for any scopes that never got an EXIT (malformed/partial trees)
@@ -590,6 +727,211 @@ class Normalizer:
         """
         return []
 
+    def _update_function_param_capture(
+        self,
+        ev: CstEvent,
+        adapter: _Adapter,
+        fm: FileMeta,
+        pend_stack: List[_PendingConstruct],
+        pending_scopes: Dict[int, _Scope],
+        token_text: Optional[str],
+    ) -> None:
+        if not pend_stack:
+            return
+
+        tok_type = ev.type or ""
+        tok_lower = tok_type.lower()
+
+        for pending in reversed(pend_stack):
+            if pending.kind != NodeKind.FUNCTION:
+                continue
+            if not pending.extra.get("param_capture_active"):
+                continue
+
+            names_list = pending.extra.setdefault("param_names", [])
+            paren_depth = int(pending.extra.get("param_capture_paren", 0) or 0)
+            started = bool(pending.extra.get("param_capture_started", False))
+            expect_name = bool(pending.extra.get("param_expect_name", False))
+            is_lambda_like = bool(pending.extra.get("param_capture_lambda", False))
+
+            if tok_type in {"(", "["} or tok_lower in {"l_paren", "left_paren", "left_parenthesis"}:
+                paren_depth += 1
+                pending.extra["param_capture_paren"] = paren_depth
+                pending.extra["param_capture_started"] = True
+                pending.extra["param_expect_name"] = True
+                break
+
+            if tok_type in {")",
+                "]",
+            } or tok_lower in {"r_paren", "right_paren", "right_parenthesis"}:
+                if paren_depth > 0:
+                    paren_depth -= 1
+                pending.extra["param_capture_paren"] = paren_depth
+                if paren_depth <= 0 and started:
+                    pending.extra["param_capture_active"] = False
+                    pending.extra["param_expect_name"] = False
+                break
+
+            if tok_type in {"{", "l_brace"} or tok_lower in {"l_brace", "left_brace", "brace"}:
+                if paren_depth <= 0:
+                    pending.extra["param_capture_active"] = False
+                    pending.extra["param_expect_name"] = False
+                break
+
+            if tok_type in {"=>", "->"} or tok_lower in {"arrow", "fat_arrow"}:
+                pending.extra["param_capture_active"] = False
+                pending.extra["param_expect_name"] = False
+                break
+
+            if tok_type in {":", "colon"} or tok_lower == "colon":
+                if paren_depth <= 0:
+                    if started or is_lambda_like:
+                        pending.extra["param_capture_active"] = False
+                    pending.extra["param_expect_name"] = False
+                else:
+                    pending.extra["param_expect_name"] = False
+                break
+
+            if tok_type in {"=", "equals"} or tok_lower == "equals":
+                pending.extra["param_expect_name"] = False
+                break
+
+            if tok_type in {",", "comma"} or tok_lower == "comma":
+                if paren_depth > 0 or is_lambda_like:
+                    pending.extra["param_expect_name"] = True
+                break
+
+            if tok_type in {"/", "slash"} or tok_lower == "slash":
+                if paren_depth > 0:
+                    pending.extra["param_expect_name"] = True
+                break
+
+            if tok_type in {"*", "star", "**"} or tok_lower in {"star", "asterisk", "double_star"}:
+                pending.extra["param_expect_name"] = True
+                break
+
+            if adapter.is_identifier_token(tok_type):
+                active_zone = False
+                if paren_depth > 0:
+                    active_zone = expect_name
+                elif not started:
+                    active_zone = expect_name
+                if active_zone:
+                    name = token_text if token_text else self._safe_token_name(ev, fm)
+                    if name:
+                        if not names_list or names_list[-1] != name:
+                            names_list.append(name)
+                            scope = pending_scopes.get(pending.byte_start)
+                            if scope is not None:
+                                if not scope.params or scope.params[-1] != name:
+                                    scope.params.append(name)
+                    pending.extra["param_expect_name"] = False
+                    pending.extra["param_capture_started"] = True
+                break
+
+            # Token didn't match any capture control; continue to next outer function.
+        return
+
+    def _extract_params_from_source(self, fm: FileMeta, scope: _Scope) -> List[str]:
+        try:
+            with open(fm.real_path, "rb") as fh:
+                fh.seek(max(0, scope.byte_start))
+                header_bytes = fh.read(512)
+        except Exception:
+            return []
+
+        try:
+            text = header_bytes.decode(fm.encoding or "utf-8", errors="ignore")
+        except Exception:
+            text = header_bytes.decode("utf-8", errors="ignore")
+
+        segment = ""
+        stripped = text.lstrip()
+        if "(" in text:
+            start = text.find("(") + 1
+            depth = 1
+            for idx in range(start, len(text)):
+                ch = text[idx]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        segment = text[start:idx]
+                        break
+        elif stripped.startswith("lambda"):
+            after = stripped.split("lambda", 1)[1]
+            for idx, ch in enumerate(after):
+                if ch == ":":
+                    segment = after[:idx]
+                    break
+        elif "=>" in text:
+            arrow_idx = text.find("=>")
+            before = text[:arrow_idx].strip()
+            if before.startswith("(") and ")" in before:
+                start = before.find("(") + 1
+                end = before.rfind(")")
+                segment = before[start:end]
+            else:
+                segment = before
+
+        if not segment:
+            return []
+
+        names: List[str] = []
+        for chunk in self._split_param_chunks(segment):
+            name = self._param_name_from_chunk(chunk)
+            if name:
+                names.append(name)
+        return names
+
+    def _split_param_chunks(self, segment: str) -> List[str]:
+        chunks: List[str] = []
+        current: List[str] = []
+        depth = 0
+        for ch in segment:
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth > 0:
+                    depth -= 1
+            if ch == "," and depth == 0:
+                chunk = "".join(current).strip()
+                if chunk:
+                    chunks.append(chunk)
+                current = []
+                continue
+            current.append(ch)
+        tail = "".join(current).strip()
+        if tail:
+            chunks.append(tail)
+        return chunks
+
+    def _param_name_from_chunk(self, chunk: str) -> Optional[str]:
+        text = chunk.strip()
+        if not text or text == "/":
+            return None
+        if text[0] in "[{":
+            return None
+        # Strip default values or annotations
+        for sep in ("=", ":"):
+            if sep in text:
+                text = text.split(sep, 1)[0].strip()
+        if not text:
+            return None
+        while text and text[0] == "*":
+            text = text[1:].lstrip()
+        if not text:
+            return None
+        name_chars: List[str] = []
+        for ch in text:
+            if ch.isalnum() or ch in {"_", "$"}:
+                name_chars.append(ch)
+            else:
+                break
+        name = "".join(name_chars)
+        return name or None
+
     def _safe_classify(self, adapter: _Adapter, node_type: str, ev: CstEvent, sink: AnomalySink, fm: FileMeta) -> Tuple[Optional[NodeKind], bool]:
         """Harden node-kind classification to handle all function/class variants."""
         try:
@@ -607,6 +949,12 @@ class Normalizer:
                 "generator_function_declaration",               # if present
             }:
                 return NodeKind.FUNCTION, True
+
+            if adapter.looks_like_function(node_type):
+                return NodeKind.FUNCTION, True
+
+            if adapter.looks_like_class(node_type):
+                return NodeKind.CLASS, True
 
             # Imports / Exports (unchanged)
             if _is_import_like(adapter, node_type):
@@ -655,8 +1003,17 @@ class Normalizer:
     def _start_based_node_id(self, fm: FileMeta, kind: NodeKind, byte_start: int) -> str:
         return _stable_id(self.cfg.id_salt, "node", kind.value, fm.path, fm.blob_sha, f"{byte_start}")
 
-    def _node_row_with_start_id(self, fm: FileMeta, info: Optional[DriverInfo], kind: NodeKind, node_id: str,
-                                *, name: Optional[str], ev: CstEvent, extra: Dict[str, str]) -> NodeRow:
+    def _node_row_with_start_id(
+        self,
+        fm: FileMeta,
+        info: Optional[DriverInfo],
+        kind: NodeKind,
+        node_id: str,
+        *,
+        name: Optional[str],
+        ev: CstEvent,
+        extra: Dict[str, object],
+    ) -> NodeRow:
         prov = Provenance(
             path=fm.path, blob_sha=fm.blob_sha, lang=fm.lang, grammar_sha=(info.grammar_sha if info else ""),
             run_id=fm.run_id, config_hash=fm.config_hash,
@@ -672,7 +1029,17 @@ class Normalizer:
             prov=prov,
         )
 
-    def _edge_row(self, fm: FileMeta, info: Optional[DriverInfo], kind: EdgeKind, *, src_id: str, dst_id: str, ev: CstEvent, extra: Dict[str, str]) -> EdgeRow:
+    def _edge_row(
+        self,
+        fm: FileMeta,
+        info: Optional[DriverInfo],
+        kind: EdgeKind,
+        *,
+        src_id: str,
+        dst_id: str,
+        ev: CstEvent,
+        extra: Dict[str, object],
+    ) -> EdgeRow:
         prov = Provenance(
             path=fm.path, blob_sha=fm.blob_sha, lang=fm.lang, grammar_sha=(info.grammar_sha if info else ""),
             run_id=fm.run_id, config_hash=fm.config_hash,
@@ -791,8 +1158,22 @@ class Normalizer:
         scope = scope_stack[idx]
 
         # Emit the scope node (start-id preserved) with current EXIT span
+        extra_payload: Dict[str, object] = {"type": extra_type}
+        if scope.kind == NodeKind.FUNCTION:
+            param_names = [name for name in scope.params if name]
+            if not param_names:
+                param_names = self._extract_params_from_source(fm, scope)
+            scope.params = param_names
+            param_map = {str(idx): name for idx, name in enumerate(param_names) if name}
+            extra_payload["param_index_to_name"] = param_map
         nrow = self._node_row_with_start_id(
-            fm, info, scope.kind, scope.node_id, name=scope.name, ev=ev, extra={"type": extra_type}
+            fm,
+            info,
+            scope.kind,
+            scope.node_id,
+            name=scope.name,
+            ev=ev,
+            extra=extra_payload,
         )
         yield ("node", nrow)
 
