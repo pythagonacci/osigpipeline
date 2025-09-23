@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "nodes_rows": 0,
+  "edges_rows": 0,
+  "anomaly_rows": 281,
+  "cfg_block_rows": 0,
+  "cfg_edge_rows": 0,
+  "dfg_node_rows": 0,
+  "dfg_edge_rows": 0,
+  "symbol_rows": 0,
+  "alias_rows": 0,
+  "effect_rows": 0,
+  "bytes_written": 20457,
+  "compression": {
+    "algorithm": "zstd",
+    "level": 7
+  },
+  "files": {
+    "nodes": 0,
+    "edges": 0,
+    "anomalies": 1,
+    "cfg_blocks": 0,
+    "cfg_edges": 0,
+    "dfg_nodes": 0,
+    "dfg_edges": 0,
+    "symbols": 0,
+    "aliases": 0,
+    "effects": 0
+  },
+  "created_at_epoch": 1758571336,
+  "created_at_iso": "2025-09-22T20:02:16Z",
+  "transaction_log": [
+    "wrote_anomalies:ucg_anomalies_00000.parquet"
+  ],
+  "run_meta": {
+    "repo_path": "domain-locker-clean",
+    "test_run": true
+  },
+  "step": "step1_ucg",
+  "integrity": {
+    "anomalies/ucg_anomalies_00000.parquet": "bd6fdcea973230e42e7eb0030dd98591"
+  }
+}

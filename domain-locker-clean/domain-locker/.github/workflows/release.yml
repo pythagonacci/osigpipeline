@@ -1,0 +1,33 @@
+name: 🥏 Create GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo with bot token
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.BOT_TOKEN }}
+
+      - name: Generate Changelog
+        id: changelog
+        uses: requarks/changelog-action@v1.10.2
+        with:
+          token: ${{ secrets.BOT_TOKEN }}
+          tag: ${{ github.ref_name }}
+          writeToFile: false
+          includeInvalidCommits: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          token: ${{ secrets.BOT_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }} of Domain Locker"
+          body: ${{ steps.changelog.outputs.changes }}
