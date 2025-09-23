@@ -153,16 +153,27 @@ class _Adapter:
             self.decorator_types = {"Decorator", "Decorators"}
             self.identifier_tokens = {"Name", "Attribute"}
             self.string_tokens = {"SimpleString"}
+            self.class_types_lower = {t.lower() for t in self.class_types}
+            self.function_types_lower = {t.lower() for t in self.function_types}
         else:  # JS/TS/JSX/TSX
             self.module_types = {"program"}
             self.class_types = {"class_declaration"}
-            self.function_types = {"function_declaration", "function_expression", "method_definition", "arrow_function"}
+            self.function_types = {
+                "function_declaration",
+                "function_expression",
+                "method_definition",
+                "arrow_function",
+                "generator_function_declaration",
+                "generator_function",
+            }
             self.import_types = {"import_statement", "import_declaration"}
             self.export_types = {"export_statement", "export_clause", "export_assignment"}
             self.call_types = {"call_expression", "new_expression"}
             self.decorator_types = {"decorator"}
             self.identifier_tokens = {"identifier", "property_identifier", "shorthand_property_identifier", "private_property_identifier"}
             self.string_tokens = {"string", "string_fragment", "string_literal", "template_string"}
+            self.class_types_lower = {t.lower() for t in self.class_types}
+            self.function_types_lower = {t.lower() for t in self.function_types}
 
     def is_module(self, t: str) -> bool: return t in self.module_types
     def is_class(self, t: str) -> bool: return t in self.class_types
@@ -173,6 +184,32 @@ class _Adapter:
     def is_decorator(self, t: str) -> bool: return t in self.decorator_types
     def is_identifier_token(self, t: str) -> bool: return t in self.identifier_tokens
     def is_string_token(self, t: str) -> bool: return t in self.string_tokens
+
+    def looks_like_function(self, node_type: str) -> bool:
+        lowered = node_type.lower()
+        if not lowered:
+            return False
+        if node_type in self.function_types or lowered in getattr(self, "function_types_lower", set()):
+            return True
+        if lowered in {"constructor"}:
+            return True
+        if "function" in lowered or "method" in lowered or "lambda" in lowered or "arrow" in lowered:
+            if any(bad in lowered for bad in ("call", "argument", "type", "signature", "expr", "expression")):
+                return False
+            return True
+        return False
+
+    def looks_like_class(self, node_type: str) -> bool:
+        lowered = node_type.lower()
+        if not lowered:
+            return False
+        if node_type in self.class_types or lowered in getattr(self, "class_types_lower", set()):
+            return True
+        if "class" in lowered:
+            if any(bad in lowered for bad in ("class_body", "class_heritage", "class_im")):
+                return False
+            return True
+        return False
 
 
 _ADAPTERS: Dict[Language, _Adapter] = {
@@ -564,8 +601,13 @@ class Normalizer:
                 # but no scope was opened (cur.kind got demoted to BLOCK), still emit a node
                 # and a defines edge under the nearest parent scope (module/class) or file.
                 if cur.kind == NodeKind.BLOCK:
-                    if adapter.is_function(cur.type_name) or adapter.is_class(cur.type_name):
-                        inferred_kind = NodeKind.FUNCTION if adapter.is_function(cur.type_name) else NodeKind.CLASS
+                    if adapter.is_function(cur.type_name) or adapter.looks_like_function(cur.type_name):
+                        inferred_kind = NodeKind.FUNCTION
+                    elif adapter.is_class(cur.type_name) or adapter.looks_like_class(cur.type_name):
+                        inferred_kind = NodeKind.CLASS
+                    else:
+                        inferred_kind = None
+                    if inferred_kind is not None:
                         node_id = self._start_based_node_id(fm, inferred_kind, cur.byte_start)
                         parent_id = scope_stack[-1].node_id if scope_stack else file_id
                         nrow = self._node_row_with_start_id(
@@ -907,6 +949,12 @@ class Normalizer:
                 "generator_function_declaration",               # if present
             }:
                 return NodeKind.FUNCTION, True
+
+            if adapter.looks_like_function(node_type):
+                return NodeKind.FUNCTION, True
+
+            if adapter.looks_like_class(node_type):
+                return NodeKind.CLASS, True
 
             # Imports / Exports (unchanged)
             if _is_import_like(adapter, node_type):
