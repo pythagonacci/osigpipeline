@@ -14,7 +14,8 @@ from .discovery import (
     AnomalySink,
     Severity,
 )
-from .normalize import normalize_parse_stream, NodeRow, NodeKind, Provenance
+from .normalize import normalize_parse_stream, NodeRow, NodeKind
+from .provenance import ProvenanceV2
 from .cfg import build_cfg  # optional
 from .dfg import build_dfg  # optional
 from .effects import build_effects  # optional
@@ -65,6 +66,38 @@ class Step1Summary:
     effects_rows: int
     anomalies: int
     wall_ms: int
+
+
+def _coerce_provenance(row: object) -> ProvenanceV2:
+    prov_attr = getattr(row, "prov", None)
+    if isinstance(prov_attr, ProvenanceV2):
+        return prov_attr
+    blob_sha = getattr(prov_attr, "blob_sha", getattr(row, "blob_sha", ""))
+    lang = getattr(row, "lang")
+    grammar_sha = getattr(prov_attr, "grammar_sha", "")
+    run_id = getattr(prov_attr, "run_id", "")
+    config_hash = getattr(prov_attr, "config_hash", "")
+    byte_start = int(getattr(prov_attr, "byte_start", 0))
+    byte_end = int(getattr(prov_attr, "byte_end", 0))
+    line_start = int(getattr(prov_attr, "line_start", 1))
+    line_end = int(getattr(prov_attr, "line_end", 1))
+    enricher_versions = getattr(prov_attr, "enricher_versions", None) or {}
+    confidence = getattr(prov_attr, "confidence", None)
+    path = getattr(row, "path", "")
+    return ProvenanceV2(
+        path=path,
+        blob_sha=blob_sha,
+        lang=lang,
+        grammar_sha=grammar_sha,
+        run_id=run_id,
+        config_hash=config_hash,
+        byte_start=byte_start,
+        byte_end=byte_end,
+        line_start=line_start,
+        line_end=line_end,
+        enricher_versions=enricher_versions,
+        confidence=confidence,
+    )
 
 
 def _select_driver(lang: Language):
@@ -211,13 +244,7 @@ def build_ucg_for_files(
                             if ek == "calls":
                                 src_id = getattr(erow, "src_id")
                                 if src_id not in emitted_node_ids:
-                                    prov = Provenance(
-                                        path=getattr(erow, "path"), blob_sha=getattr(erow, "prov").blob_sha,
-                                        lang=getattr(erow, "lang"), grammar_sha="", run_id=getattr(erow, "prov").run_id,
-                                        config_hash=getattr(erow, "prov").config_hash, byte_start=getattr(erow, "prov").byte_start,
-                                        byte_end=getattr(erow, "prov").byte_end, line_start=getattr(erow, "prov").line_start,
-                                        line_end=getattr(erow, "prov").line_end,
-                                    )
+                                    prov = _coerce_provenance(erow)
                                     nrow = NodeRow(id=src_id, kind=NodeKind.FUNCTION, name=None, path=prov.path, lang=prov.lang, attrs_json="{}", prov=prov)
                                     node_edge_buf.append(("node", nrow))
                                     emitted_node_ids.add(src_id)
@@ -233,13 +260,7 @@ def build_ucg_for_files(
                                     except Exception:
                                         t = ""
                                     kind = NodeKind.FUNCTION if ("function" in t or "method" in t) else (NodeKind.CLASS if "class" in t else NodeKind.BLOCK)
-                                    prov = Provenance(
-                                        path=getattr(erow, "path"), blob_sha=getattr(erow, "prov").blob_sha,
-                                        lang=getattr(erow, "lang"), grammar_sha="", run_id=getattr(erow, "prov").run_id,
-                                        config_hash=getattr(erow, "prov").config_hash, byte_start=getattr(erow, "prov").byte_start,
-                                        byte_end=getattr(erow, "prov").byte_end, line_start=getattr(erow, "prov").line_start,
-                                        line_end=getattr(erow, "prov").line_end,
-                                    )
+                                    prov = _coerce_provenance(erow)
                                     nrow = NodeRow(id=dst_id, kind=kind, name=None, path=prov.path, lang=prov.lang, attrs_json="{}", prov=prov)
                                     node_edge_buf.append(("node", nrow))
                                     emitted_node_ids.add(dst_id)
