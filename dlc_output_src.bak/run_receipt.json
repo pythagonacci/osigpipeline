@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "nodes_rows": 0,
+  "edges_rows": 0,
+  "anomaly_rows": 0,
+  "cfg_block_rows": 0,
+  "cfg_edge_rows": 0,
+  "dfg_node_rows": 0,
+  "dfg_edge_rows": 0,
+  "symbol_rows": 0,
+  "alias_rows": 0,
+  "effect_rows": 0,
+  "bytes_written": 0,
+  "compression": {
+    "algorithm": "zstd",
+    "level": 7
+  },
+  "files": {
+    "nodes": 0,
+    "edges": 0,
+    "anomalies": 0,
+    "cfg_blocks": 0,
+    "cfg_edges": 0,
+    "dfg_nodes": 0,
+    "dfg_edges": 0,
+    "symbols": 0,
+    "aliases": 0,
+    "effects": 0
+  },
+  "created_at_epoch": 1758549238,
+  "created_at_iso": "2025-09-22T13:53:58Z",
+  "transaction_log": [],
+  "run_meta": {
+    "repo_path": "/tmp/domain-locker-clean/domain-locker/src",
+    "test_run": true
+  },
+  "step": "step1_ucg",
+  "integrity": {}
+}

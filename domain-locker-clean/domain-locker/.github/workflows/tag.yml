@@ -1,0 +1,63 @@
+name: 🏷️ Tag new versions
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'package.json'
+
+jobs:
+  tag-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo with bot token
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.BOT_TOKEN }}
+
+      - name: Configure git as bot user
+        run: |
+          git config user.name "liss-bot"
+          git config user.email "alicia-gh-bot@mail.as93.net"
+
+      - name: Get version from package.json
+        id: get_version
+        run: |
+          VERSION=$(jq -r .version package.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update submodules recursively and stage updates
+        continue-on-error: true
+        run: |
+          echo "Updating submodules recursively..."
+          git submodule update --recursive --remote || echo "Submodule update failed or no changes."
+
+          echo "Staging submodule pointer updates..."
+          git submodule foreach --quiet 'git fetch && git checkout origin/$(git rev-parse --abbrev-ref HEAD) && cd $toplevel && git add $name'
+
+      - name: Commit submodule updates if any
+        continue-on-error: true
+        run: |
+          if ! git diff --cached --quiet; then
+            VERSION="${{ steps.get_version.outputs.version }}"
+            echo "Committing submodule pointer changes..."
+            git commit -m "bot: Update supabase server for domain-locker v${VERSION}" || echo "Nothing to commit"
+            git push origin HEAD || echo "Push failed or nothing to push"
+          else
+            echo "No submodule updates to commit."
+          fi
+
+      - name: Create Git Tag (skip if exists)
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+
+          # Check if the tag already exists remotely
+          if git ls-remote --tags origin | grep -q "refs/tags/v${VERSION}"; then
+            echo "Tag v${VERSION} already exists. Skipping."
+          else
+            echo "Tag v${VERSION} does not exist. Creating now..."
+            git tag "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi

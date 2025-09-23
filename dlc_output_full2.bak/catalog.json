@@ -1,0 +1,90 @@
+{
+  "tables": {
+    "nodes": {
+      "path": "nodes/*.parquet",
+      "schema": "id: string\nkind: string\nname: string\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [
+        "lang",
+        "kind"
+      ],
+      "row_count": 12659
+    },
+    "edges": {
+      "path": "edges/*.parquet",
+      "schema": "id: string\nkind: string\nsrc_id: string\ndst_id: string\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [
+        "lang",
+        "kind"
+      ],
+      "row_count": 12210
+    },
+    "anomalies": {
+      "path": "anomalies/*.parquet",
+      "schema": "path: string\nblob_sha: string\nkind: string\nseverity: string\ndetail: string\nspan_start: int64\nspan_end: int64\nts_ms: int64\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [],
+      "row_count": 3721
+    },
+    "cfg_blocks": {
+      "path": "cfg_blocks/*.parquet",
+      "schema": "id: string\nfunc_id: string\nkind: string\nindex: int32\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [
+        "lang",
+        "kind"
+      ],
+      "row_count": 0
+    },
+    "cfg_edges": {
+      "path": "cfg_edges/*.parquet",
+      "schema": "id: string\nfunc_id: string\nkind: string\nsrc_block_id: string\ndst_block_id: string\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [
+        "lang",
+        "kind"
+      ],
+      "row_count": 0
+    },
+    "dfg_nodes": {
+      "path": "dfg_nodes/*.parquet",
+      "schema": "id: string\nfunc_id: string\nkind: string\nname: string\nversion: int32\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [
+        "lang",
+        "kind"
+      ],
+      "row_count": 0
+    },
+    "dfg_edges": {
+      "path": "dfg_edges/*.parquet",
+      "schema": "id: string\nfunc_id: string\nkind: string\nsrc_id: string\ndst_id: string\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [
+        "lang",
+        "kind"
+      ],
+      "row_count": 0
+    },
+    "symbols": {
+      "path": "symbols/*.parquet",
+      "schema": "id: string\nscope_id: string\nname: string\nkind: string\nvisibility: string\nis_dynamic: bool\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [
+        "lang",
+        "kind"
+      ],
+      "row_count": 0
+    },
+    "aliases": {
+      "path": "aliases/*.parquet",
+      "schema": "id: string\nalias_kind: string\nalias_id: string\ntarget_symbol_id: string\nalias_name: string\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [
+        "alias_kind"
+      ],
+      "row_count": 0
+    },
+    "effects": {
+      "path": "effects/*.parquet",
+      "schema": "id: string\nkind: string\ncarrier: string\nargs_json: string\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
+      "partitions": [
+        "lang",
+        "kind"
+      ],
+      "row_count": 0
+    }
+  }
+}

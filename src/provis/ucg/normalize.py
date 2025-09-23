@@ -605,7 +605,15 @@ class Normalizer:
                             fm, info, inferred_kind, node_id, name=cur.name, ev=ev, extra={"type": cur.type_name, "inferred": "true"}
                         )
                         yield ("node", nrow)
-                        erow = self._edge_row(fm, info, EdgeKind.DEFINES, src_id=parent_id, dst_id=node_id, ev=ev, extra={"inferred": "true"})
+                        erow = self._edge_row(
+                            fm,
+                            info,
+                            EdgeKind.DEFINES,
+                            src_id=parent_id,
+                            dst_id=node_id,
+                            ev=ev,
+                            extra={"inferred": "true", "type": cur.type_name},
+                        )
                         yield ("edge", erow)
 
                 # Imports / exports as symbols
@@ -1172,7 +1180,15 @@ class Normalizer:
         yield ("node", nrow)
 
         parent_id = scope.parent_id or file_id
-        erow = self._edge_row(fm, info, EdgeKind.DEFINES, src_id=parent_id, dst_id=scope.node_id, ev=ev, extra={})
+        erow = self._edge_row(
+            fm,
+            info,
+            EdgeKind.DEFINES,
+            src_id=parent_id,
+            dst_id=scope.node_id,
+            ev=ev,
+            extra={"type": (extra_type.lower() if isinstance(extra_type, str) else str(extra_type))},
+        )
         yield ("edge", erow)
 
         # Pop exactly this scope (and only this one)

@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "nodes_rows": 19,
+  "edges_rows": 18,
+  "anomaly_rows": 0,
+  "cfg_block_rows": 0,
+  "cfg_edge_rows": 0,
+  "dfg_node_rows": 0,
+  "dfg_edge_rows": 0,
+  "symbol_rows": 0,
+  "alias_rows": 0,
+  "effect_rows": 0,
+  "bytes_written": 13553,
+  "compression": {
+    "algorithm": "zstd",
+    "level": 7
+  },
+  "files": {
+    "nodes": 1,
+    "edges": 1,
+    "anomalies": 0,
+    "cfg_blocks": 0,
+    "cfg_edges": 0,
+    "dfg_nodes": 0,
+    "dfg_edges": 0,
+    "symbols": 0,
+    "aliases": 0,
+    "effects": 0
+  },
+  "created_at_epoch": 1758575758,
+  "created_at_iso": "2025-09-22T21:15:58Z",
+  "transaction_log": [
+    "wrote_nodes:ucg_nodes_00000.parquet",
+    "wrote_edges:ucg_edges_00000.parquet"
+  ],
+  "integrity": {
+    "nodes/ucg_nodes_00000.parquet": "3236b2eabe8790d6d635632632a020d1",
+    "edges/ucg_edges_00000.parquet": "04f1846cf158471102f993618f6b3488"
+  }
+}

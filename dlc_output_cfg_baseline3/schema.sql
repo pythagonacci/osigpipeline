@@ -1,0 +1,32 @@
+-- Auto-generated UCG schema for DuckDB
+CREATE TABLE nodes AS SELECT * FROM read_parquet('nodes/*.parquet');
+CREATE TABLE edges AS SELECT * FROM read_parquet('edges/*.parquet');
+CREATE TABLE anomalies AS SELECT * FROM read_parquet('anomalies/*.parquet');
+CREATE TABLE cfg_blocks AS SELECT * FROM read_parquet('cfg_blocks/*.parquet');
+CREATE TABLE cfg_edges AS SELECT * FROM read_parquet('cfg_edges/*.parquet');
+CREATE TABLE dfg_nodes AS SELECT * FROM read_parquet('dfg_nodes/*.parquet');
+CREATE TABLE dfg_edges AS SELECT * FROM read_parquet('dfg_edges/*.parquet');
+CREATE TABLE symbols AS SELECT * FROM read_parquet('symbols/*.parquet');
+CREATE TABLE aliases AS SELECT * FROM read_parquet('aliases/*.parquet');
+CREATE TABLE effects AS SELECT * FROM read_parquet('effects/*.parquet');
+
+-- Suggested indexes
+CREATE INDEX idx_nodes_kind ON nodes(kind);
+CREATE INDEX idx_nodes_path ON nodes(path);
+CREATE INDEX idx_edges_src ON edges(src_id);
+CREATE INDEX idx_edges_dst ON edges(dst_id);
+CREATE INDEX idx_cfg_blocks_func ON cfg_blocks(func_id);
+CREATE INDEX idx_cfg_edges_src ON cfg_edges(src_block_id);
+CREATE INDEX idx_cfg_edges_dst ON cfg_edges(dst_block_id);
+CREATE INDEX idx_dfg_nodes_func ON dfg_nodes(func_id);
+CREATE INDEX idx_dfg_nodes_name ON dfg_nodes(name);
+CREATE INDEX idx_dfg_edges_src ON dfg_edges(src_id);
+CREATE INDEX idx_dfg_edges_dst ON dfg_edges(dst_id);
+CREATE INDEX idx_symbols_scope ON symbols(scope_id);
+CREATE INDEX idx_symbols_name ON symbols(name);
+CREATE INDEX idx_aliases_kind ON aliases(alias_kind);
+CREATE INDEX idx_aliases_alias ON aliases(alias_id);
+CREATE INDEX idx_aliases_tgt ON aliases(target_symbol_id);
+CREATE INDEX idx_effects_kind ON effects(kind);
+CREATE INDEX idx_effects_carr ON effects(carrier);
+CREATE INDEX idx_effects_path ON effects(path);
