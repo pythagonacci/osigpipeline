@@ -330,7 +330,7 @@ class UcgStore:
     # ----------------------------- internals: flush ----------------------------
 
     def _flush_nodes(self) -> None:
-        if not self._node_buf:
+        if not self._node_buf and self._node_file_idx > 0:
             return
         path = self._staging / "nodes" / f"{self.file_prefix}_nodes_{self._node_file_idx:05}.parquet"
         rows_written = self._verified_write(self._node_buf, path)
@@ -340,7 +340,7 @@ class UcgStore:
         self._node_buf.clear()
 
     def _flush_edges(self) -> None:
-        if not self._edge_buf:
+        if not self._edge_buf and self._edge_file_idx > 0:
             return
         path = self._staging / "edges" / f"{self.file_prefix}_edges_{self._edge_file_idx:05}.parquet"
         rows_written = self._verified_write(self._edge_buf, path)
