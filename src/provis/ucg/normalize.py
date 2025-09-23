@@ -245,7 +245,8 @@ class Normalizer:
     def __init__(self, cfg: Optional[NormalizerConfig] = None) -> None:
         self.cfg = cfg or NormalizerConfig()
         # Sliding window of recent TOKEN events for qualified-name heuristics (small & bounded)
-        self._token_window = deque(maxlen=16)
+        # Bump to 32 to better tolerate decorators/modifiers before names
+        self._token_window = deque(maxlen=32)
 
     # ---- public ---------------------------------------------------------------
 
@@ -313,8 +314,8 @@ class Normalizer:
                             if (
                                 cur.kind in (NodeKind.FUNCTION, NodeKind.CLASS)
                                 and cur.name is None
-                                and abs(ev.byte_start - cur.byte_start) <= 50
-                            ):  # reasonable proximity
+                                and abs(ev.byte_start - cur.byte_start) <= 128
+                            ):  # tolerate modest gaps before name
                                 cur.name = token_name
                                 # Also update the scope if it exists
                                 if scope_stack and scope_stack[-1].byte_start == cur.byte_start:
@@ -365,7 +366,7 @@ class Normalizer:
                     pending_name_token is not None):
                     token_ev, token_name = pending_name_token
                     # Check if the token is close to this ENTER (within reasonable byte range)
-                    if abs(token_ev.byte_start - ev.byte_start) <= 50:
+                    if abs(token_ev.byte_start - ev.byte_start) <= 128:
                         cur.name = token_name
                         pending_name_token = None  # Consume the pending token
                 
@@ -379,48 +380,40 @@ class Normalizer:
                     module_emitted = True
 
                 if nkind in (NodeKind.CLASS, NodeKind.FUNCTION):
-                    # Extra guard: only open scopes for true decl nodes (prevents keyword-leaf scopes)
-                    is_real_decl = (
-                        (nkind == NodeKind.FUNCTION and ev.type in adapter.function_types) or
-                        (nkind == NodeKind.CLASS and ev.type in adapter.class_types)
-                    )
-                    if is_real_decl:
-                        node_id = self._start_based_node_id(fm, nkind, ev.byte_start)
-                        parent_id = scope_stack[-1].node_id if scope_stack else file_id
-                        scope = _Scope(node_id=node_id, kind=nkind, name=cur.name, parent_id=parent_id, byte_start=ev.byte_start)
-                        scope_stack.append(scope)
-                        pending_scopes[ev.byte_start] = scope
-                        if nkind == NodeKind.FUNCTION:
-                            scope.params = []
-                            lower_type = ev.type.lower()
-                            is_lambda_like = "lambda" in lower_type
-                            is_arrow_like = "arrow" in lower_type
-                            cur.extra["param_names"] = []
-                            cur.extra["param_capture_active"] = True
-                            cur.extra["param_capture_paren"] = 0
-                            cur.extra["param_capture_started"] = False
-                            cur.extra["param_capture_lambda"] = bool(is_lambda_like or is_arrow_like)
-                            cur.extra["param_expect_name"] = bool(cur.extra["param_capture_lambda"])
-                        if pending_decorators:
-                            still_pending: List[Tuple[str, CstEvent, Dict[str, object]]] = []
-                            for deco_id, deco_ev, deco_extra in pending_decorators:
-                                if deco_ev.byte_start <= ev.byte_start:
-                                    erow = self._edge_row(
-                                        fm,
-                                        info,
-                                        EdgeKind.DECORATES,
-                                        src_id=deco_id,
-                                        dst_id=node_id,
-                                        ev=deco_ev,
-                                        extra=dict(deco_extra),
-                                    )
-                                    yield ("edge", erow)
-                                else:
-                                    still_pending.append((deco_id, deco_ev, deco_extra))
-                            pending_decorators[:] = still_pending
-                    else:
-                        # Demote misclassified construct to a non-scope BLOCK to avoid duplicates
-                        cur.kind = NodeKind.BLOCK
+                    # Open scopes for declarations recognized by _safe_classify.
+                    node_id = self._start_based_node_id(fm, nkind, ev.byte_start)
+                    parent_id = scope_stack[-1].node_id if scope_stack else file_id
+                    scope = _Scope(node_id=node_id, kind=nkind, name=cur.name, parent_id=parent_id, byte_start=ev.byte_start)
+                    scope_stack.append(scope)
+                    pending_scopes[ev.byte_start] = scope
+                    if nkind == NodeKind.FUNCTION:
+                        scope.params = []
+                        lower_type = ev.type.lower()
+                        is_lambda_like = "lambda" in lower_type
+                        is_arrow_like = "arrow" in lower_type
+                        cur.extra["param_names"] = []
+                        cur.extra["param_capture_active"] = True
+                        cur.extra["param_capture_paren"] = 0
+                        cur.extra["param_capture_started"] = False
+                        cur.extra["param_capture_lambda"] = bool(is_lambda_like or is_arrow_like)
+                        cur.extra["param_expect_name"] = bool(cur.extra["param_capture_lambda"])
+                    if pending_decorators:
+                        still_pending: List[Tuple[str, CstEvent, Dict[str, object]]] = []
+                        for deco_id, deco_ev, deco_extra in pending_decorators:
+                            if deco_ev.byte_start <= ev.byte_start:
+                                erow = self._edge_row(
+                                    fm,
+                                    info,
+                                    EdgeKind.DECORATES,
+                                    src_id=deco_id,
+                                    dst_id=node_id,
+                                    ev=deco_ev,
+                                    extra=dict(deco_extra),
+                                )
+                                yield ("edge", erow)
+                            else:
+                                still_pending.append((deco_id, deco_ev, deco_extra))
+                        pending_decorators[:] = still_pending
 
                 # call placeholder (we'll emit CALL edge at EXIT)
                 if adapter.is_call(ev.type):
@@ -441,7 +434,7 @@ class Normalizer:
                 # Clear pending name token if it's too far from this ENTER
                 if pending_name_token is not None:
                     token_ev, _ = pending_name_token
-                    if abs(token_ev.byte_start - ev.byte_start) > 100:
+                    if abs(token_ev.byte_start - ev.byte_start) > 256:
                         pending_name_token = None
 
             elif ev.kind == CstEventKind.EXIT:
@@ -463,8 +456,9 @@ class Normalizer:
 
                 # If this EXIT should close a scope, do so robustly
                 if cur.kind in (NodeKind.MODULE, NodeKind.CLASS, NodeKind.FUNCTION):
-                    # Update the *active* scope name if it matches this construct start
-                    if scope_stack and scope_stack[-1].byte_start == cur.byte_start:
+                    # Update the *active* scope name if it matches this construct start (tolerant)
+                    TOL = 4
+                    if scope_stack and abs(scope_stack[-1].byte_start - cur.byte_start) <= TOL:
                         if cur.name and not scope_stack[-1].name:
                             scope_stack[-1].name = cur.name
                         if (
@@ -491,10 +485,10 @@ class Normalizer:
                         ):
                             yield item
                     else:
-                        # Slow-path: search for a scope that started at this construct's byte_start
+                        # Slow-path: search for a scope that started at this construct's byte_start (tolerant)
                         match_idx = -1
                         for i in range(len(scope_stack) - 1, -1, -1):
-                            if scope_stack[i].byte_start == cur.byte_start:
+                            if abs(scope_stack[i].byte_start - cur.byte_start) <= TOL:
                                 match_idx = i
                                 break
 
