@@ -230,7 +230,13 @@ def build_ucg_for_files(
         emitted_node_ids: set[str] = set()
         try:
             for item in normalize_parse_stream(fm, driver_info, event_list, sink):
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "edge":
+                item_kind = item[0] if isinstance(item, tuple) and len(item) == 2 else None
+                
+                # Skip scope_v2 items - they're handled separately by symbols builder
+                if item_kind == "scope_v2":
+                    continue
+                    
+                if item_kind == "edge":
                     edge_emitted_for_file = True
                     # Synthesize missing caller/decl nodes if not seen yet
                     try:
@@ -264,7 +270,7 @@ def build_ucg_for_files(
                                     emitted_node_ids.add(dst_id)
                     except Exception:
                         pass
-                else:
+                elif item_kind == "node":
                     # record real nodes
                     try:
                         nrow = item[1]
@@ -273,9 +279,12 @@ def build_ucg_for_files(
                             emitted_node_ids.add(nid)
                     except Exception:
                         pass
-                node_edge_buf.append(item)
-                if len(node_edge_buf) >= cfg.node_edge_batch:
-                    flush_buffers()
+                
+                # Only append node/edge items to the main buffer
+                if item_kind in ("node", "edge"):
+                    node_edge_buf.append(item)
+                    if len(node_edge_buf) >= cfg.node_edge_batch:
+                        flush_buffers()
         except Exception as e:
             sink.emit(Anomaly(
                 path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
@@ -292,6 +301,9 @@ def build_ucg_for_files(
                         edge_emitted_for_file = True
                         if len(node_edge_buf) >= cfg.node_edge_batch:
                             flush_buffers()
+                    # Skip scope_v2 items in fallback too
+                    elif kind == "scope_v2":
+                        continue
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
