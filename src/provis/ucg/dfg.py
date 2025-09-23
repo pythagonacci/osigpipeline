@@ -9,6 +9,7 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 from .discovery import Anomaly, AnomalyKind, AnomalySink, FileMeta, Language, Severity
 from .parser_registry import CstEvent, CstEventKind, DriverInfo, ParseStream
+from .provenance import ProvenanceV2, build_provenance_from_event
 
 
 # ==============================================================================
@@ -29,20 +30,6 @@ class DfgEdgeKind(str, Enum):
 
 
 @dataclass(frozen=True)
-class DfgProvenance:
-    path: str
-    blob_sha: str
-    lang: Language
-    grammar_sha: str
-    run_id: str
-    config_hash: str
-    byte_start: int
-    byte_end: int
-    line_start: int
-    line_end: int
-
-
-@dataclass(frozen=True)
 class DfgNodeRow:
     id: str
     func_id: str
@@ -52,7 +39,7 @@ class DfgNodeRow:
     path: str
     lang: Language
     attrs_json: str
-    prov: DfgProvenance
+    prov: ProvenanceV2
 
 
 @dataclass(frozen=True)
@@ -65,7 +52,7 @@ class DfgEdgeRow:
     path: str
     lang: Language
     attrs_json: str
-    prov: DfgProvenance
+    prov: ProvenanceV2
 
 
 # ==============================================================================
@@ -192,14 +179,8 @@ class DfgBuilder:
 
         func_stack: List[_FuncState] = []
 
-        def prov(ev: CstEvent) -> DfgProvenance:
-            return DfgProvenance(
-                path=fm.path, blob_sha=fm.blob_sha, lang=fm.lang,
-                grammar_sha=(info.grammar_sha if info else ""),
-                run_id=fm.run_id, config_hash=fm.config_hash,
-                byte_start=ev.byte_start, byte_end=ev.byte_end,
-                line_start=ev.line_start, line_end=ev.line_end,
-            )
+        def prov(ev: CstEvent) -> ProvenanceV2:
+            return build_provenance_from_event(fm, info, ev)
 
         def node_id(kind: DfgNodeKind, func_id: str, name: Optional[str], version: Optional[int], ev: CstEvent) -> str:
             # stable by function, name, version, and start byte

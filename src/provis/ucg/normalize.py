@@ -15,6 +15,11 @@ from .parser_registry import (
     DriverInfo,
     ParseStream,
 )
+from .provenance import (
+    ProvenanceV2,
+    build_provenance,
+    build_provenance_from_event,
+)
 
 # --- Identifier normalization constants ----------------------------------------
 
@@ -61,20 +66,6 @@ class EdgeKind(str, Enum):
 
 
 @dataclass(frozen=True)
-class Provenance:
-    path: str
-    blob_sha: str
-    lang: Language
-    grammar_sha: str
-    run_id: str
-    config_hash: str
-    byte_start: int
-    byte_end: int
-    line_start: int
-    line_end: int
-
-
-@dataclass(frozen=True)
 class NodeRow:
     id: str
     kind: NodeKind
@@ -82,7 +73,7 @@ class NodeRow:
     path: str
     lang: Language
     attrs_json: str  # compact JSON with language-aware extras
-    prov: Provenance
+    prov: ProvenanceV2
 
 
 @dataclass(frozen=True)
@@ -94,7 +85,7 @@ class EdgeRow:
     path: str
     lang: Language
     attrs_json: str
-    prov: Provenance
+    prov: ProvenanceV2
 
 
 # ==============================================================================
@@ -1014,10 +1005,10 @@ class Normalizer:
         ev: CstEvent,
         extra: Dict[str, object],
     ) -> NodeRow:
-        prov = Provenance(
-            path=fm.path, blob_sha=fm.blob_sha, lang=fm.lang, grammar_sha=(info.grammar_sha if info else ""),
-            run_id=fm.run_id, config_hash=fm.config_hash,
-            byte_start=ev.byte_start, byte_end=ev.byte_end, line_start=ev.line_start, line_end=ev.line_end,
+        prov = build_provenance_from_event(
+            fm,
+            info,
+            ev,
         )
         return NodeRow(
             id=node_id,
@@ -1040,10 +1031,10 @@ class Normalizer:
         ev: CstEvent,
         extra: Dict[str, object],
     ) -> EdgeRow:
-        prov = Provenance(
-            path=fm.path, blob_sha=fm.blob_sha, lang=fm.lang, grammar_sha=(info.grammar_sha if info else ""),
-            run_id=fm.run_id, config_hash=fm.config_hash,
-            byte_start=ev.byte_start, byte_end=ev.byte_end, line_start=ev.line_start, line_end=ev.line_end,
+        prov = build_provenance_from_event(
+            fm,
+            info,
+            ev,
         )
         eid = _stable_id(self.cfg.id_salt, "edge", kind.value, fm.path, fm.blob_sha, src_id, dst_id, f"{ev.byte_start}")
         return EdgeRow(
@@ -1058,10 +1049,10 @@ class Normalizer:
         )
 
     def _create_symbol_node(self, fm: FileMeta, info: Optional[DriverInfo], name: str, ev: CstEvent, symbol_kind: str) -> NodeRow:
-        prov = Provenance(
-            path=fm.path, blob_sha=fm.blob_sha, lang=fm.lang, grammar_sha=(info.grammar_sha if info else ""),
-            run_id=fm.run_id, config_hash=fm.config_hash,
-            byte_start=ev.byte_start, byte_end=ev.byte_end, line_start=ev.line_start, line_end=ev.line_end,
+        prov = build_provenance_from_event(
+            fm,
+            info,
+            ev,
         )
         symbol_id = _stable_id(self.cfg.id_salt, "symbol", fm.path, fm.blob_sha, name, symbol_kind)
         return NodeRow(
@@ -1075,10 +1066,13 @@ class Normalizer:
         )
 
     def _file_node(self, fm: FileMeta, info: Optional[DriverInfo]) -> NodeRow:
-        prov = Provenance(
-            path=fm.path, blob_sha=fm.blob_sha, lang=fm.lang, grammar_sha=(info.grammar_sha if info else ""),
-            run_id=fm.run_id, config_hash=fm.config_hash,
-            byte_start=0, byte_end=fm.size_bytes, line_start=1, line_end=1,
+        prov = build_provenance(
+            fm,
+            info,
+            byte_start=0,
+            byte_end=fm.size_bytes,
+            line_start=1,
+            line_end=1,
         )
         nid = _stable_id(self.cfg.id_salt, "node", "file", fm.path, fm.blob_sha, "0")
         return NodeRow(

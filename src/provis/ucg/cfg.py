@@ -9,6 +9,7 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 from .discovery import Anomaly, AnomalyKind, AnomalySink, FileMeta, Language, Severity
 from .parser_registry import CstEvent, CstEventKind, DriverInfo, ParseStream
+from .provenance import ProvenanceV2, build_provenance, build_provenance_from_event
 
 
 # ==============================================================================
@@ -32,20 +33,6 @@ class CfgEdgeKind(str, Enum):
 
 
 @dataclass(frozen=True)
-class CfgProvenance:
-    path: str
-    blob_sha: str
-    lang: Language
-    grammar_sha: str
-    run_id: str
-    config_hash: str
-    byte_start: int
-    byte_end: int
-    line_start: int
-    line_end: int
-
-
-@dataclass(frozen=True)
 class BlockRow:
     id: str
     func_id: str
@@ -54,7 +41,7 @@ class BlockRow:
     path: str
     lang: Language
     attrs_json: str                 # {"node_type": "...", "label": "..."} etc.
-    prov: CfgProvenance
+    prov: ProvenanceV2
 
 
 @dataclass(frozen=True)
@@ -67,7 +54,7 @@ class CfgEdgeRow:
     path: str
     lang: Language
     attrs_json: str
-    prov: CfgProvenance
+    prov: ProvenanceV2
 
 
 # ==============================================================================
@@ -198,14 +185,8 @@ class CfgBuilder:
 
         func_stack: List[_FuncState] = []
 
-        def prov(ev: CstEvent) -> CfgProvenance:
-            return CfgProvenance(
-                path=fm.path, blob_sha=fm.blob_sha, lang=fm.lang,
-                grammar_sha=(info.grammar_sha if info else ""),
-                run_id=fm.run_id, config_hash=fm.config_hash,
-                byte_start=ev.byte_start, byte_end=ev.byte_end,
-                line_start=ev.line_start, line_end=ev.line_end,
-            )
+        def prov(ev: CstEvent) -> ProvenanceV2:
+            return build_provenance_from_event(fm, info, ev)
 
         def new_block_id(func_id: str, idx: int) -> str:
             return _stable_id(self.cfg.id_salt, "block", fm.path, fm.blob_sha, func_id, str(idx))
@@ -435,12 +416,19 @@ class CfgBuilder:
             syn_ev = CstEvent(kind=CstEventKind.EXIT, type="__synthetic__", byte_start=0, byte_end=0, line_start=1, line_end=1)
             b_exit = BlockRow(
                 id=_stable_id(self.cfg.id_salt, "block", fm.path, fm.blob_sha, func.func_id, "exit_synth"),
-                func_id=func.func_id, kind=BlockKind.EXIT, index=func.next_index,
-                path=fm.path, lang=fm.lang, attrs_json=_compact({"synthetic": "true"}),
-                prov=CfgProvenance(
-                    path=fm.path, blob_sha=fm.blob_sha, lang=fm.lang,
-                    grammar_sha=(info.grammar_sha if info else ""), run_id=fm.run_id,
-                    config_hash=fm.config_hash, byte_start=0, byte_end=0, line_start=1, line_end=1,
+                func_id=func.func_id,
+                kind=BlockKind.EXIT,
+                index=func.next_index,
+                path=fm.path,
+                lang=fm.lang,
+                attrs_json=_compact({"synthetic": "true"}),
+                prov=build_provenance(
+                    fm,
+                    info,
+                    byte_start=0,
+                    byte_end=0,
+                    line_start=1,
+                    line_end=1,
                 ),
             )
             yield ("cfg_block", b_exit)

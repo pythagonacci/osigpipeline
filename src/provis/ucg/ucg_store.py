@@ -25,9 +25,25 @@ from .symbols import SymbolRow, AliasRow
 from .effects import EffectRow, EffectKind
 # Anomalies
 from .discovery import Anomaly
+from ..core.config import feature_enabled
 
 
 SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION_V2 = "2.0"
+
+if _PA_IMPORT_ERROR is None:
+    _PROV_ENRICHER_TYPE = pa.map_(pa.string(), pa.string())
+    _CONFIDENCE_VALUE_STRUCT = pa.struct(
+        [
+            pa.field("string_value", pa.string()),
+            pa.field("double_value", pa.float64()),
+        ]
+    )
+    _PROV_CONFIDENCE_TYPE = pa.map_(pa.string(), _CONFIDENCE_VALUE_STRUCT)
+else:  # pragma: no cover - only exercised when pyarrow unavailable
+    _PROV_ENRICHER_TYPE = None
+    _CONFIDENCE_VALUE_STRUCT = None
+    _PROV_CONFIDENCE_TYPE = None
 
 
 class UcgStore:
@@ -62,6 +78,7 @@ class UcgStore:
         self.staging_suffix = staging_suffix
         self.file_prefix = file_prefix
         self.max_buffer_memory_mb = max_buffer_memory_mb
+        self._enable_prov_v2 = feature_enabled("feature.step1.provenance_v2")
 
         # Staging
         self._staging = Path(str(self.out_dir) + self.staging_suffix)
@@ -77,6 +94,16 @@ class UcgStore:
         (self._staging / "symbols").mkdir(parents=True, exist_ok=True)
         (self._staging / "aliases").mkdir(parents=True, exist_ok=True)
         (self._staging / "effects").mkdir(parents=True, exist_ok=True)
+        if self._enable_prov_v2:
+            (self._staging / "nodes_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "edges_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "cfg_blocks_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "cfg_edges_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "dfg_nodes_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "dfg_edges_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "symbols_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "aliases_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "effects_v2").mkdir(parents=True, exist_ok=True)
 
         # Schemas
         self._node_schema = _node_schema()
@@ -89,6 +116,15 @@ class UcgStore:
         self._symbol_schema = _symbol_schema()
         self._alias_schema = _alias_schema()
         self._effect_schema = _effect_schema()
+        self._node_schema_v2 = _node_schema_v2() if self._enable_prov_v2 else None
+        self._edge_schema_v2 = _edge_schema_v2() if self._enable_prov_v2 else None
+        self._cfg_block_schema_v2 = _cfg_block_schema_v2() if self._enable_prov_v2 else None
+        self._cfg_edge_schema_v2 = _cfg_edge_schema_v2() if self._enable_prov_v2 else None
+        self._dfg_node_schema_v2 = _dfg_node_schema_v2() if self._enable_prov_v2 else None
+        self._dfg_edge_schema_v2 = _dfg_edge_schema_v2() if self._enable_prov_v2 else None
+        self._symbol_schema_v2 = _symbol_schema_v2() if self._enable_prov_v2 else None
+        self._alias_schema_v2 = _alias_schema_v2() if self._enable_prov_v2 else None
+        self._effect_schema_v2 = _effect_schema_v2() if self._enable_prov_v2 else None
 
         # Buffers
         self._node_buf = _AdaptiveRowBuffer(self._node_schema, self.roll_rows, self.max_buffer_memory_mb)
@@ -101,6 +137,51 @@ class UcgStore:
         self._symbol_buf = _AdaptiveRowBuffer(self._symbol_schema, self.roll_rows, self.max_buffer_memory_mb)
         self._alias_buf = _AdaptiveRowBuffer(self._alias_schema, self.roll_rows, self.max_buffer_memory_mb)
         self._effect_buf = _AdaptiveRowBuffer(self._effect_schema, self.roll_rows, self.max_buffer_memory_mb)
+        self._node_buf_v2 = (
+            _AdaptiveRowBuffer(self._node_schema_v2, self.roll_rows, self.max_buffer_memory_mb)
+            if self._node_schema_v2 is not None
+            else None
+        )
+        self._edge_buf_v2 = (
+            _AdaptiveRowBuffer(self._edge_schema_v2, self.roll_rows, self.max_buffer_memory_mb)
+            if self._edge_schema_v2 is not None
+            else None
+        )
+        self._cfg_block_buf_v2 = (
+            _AdaptiveRowBuffer(self._cfg_block_schema_v2, self.roll_rows, self.max_buffer_memory_mb)
+            if self._cfg_block_schema_v2 is not None
+            else None
+        )
+        self._cfg_edge_buf_v2 = (
+            _AdaptiveRowBuffer(self._cfg_edge_schema_v2, self.roll_rows, self.max_buffer_memory_mb)
+            if self._cfg_edge_schema_v2 is not None
+            else None
+        )
+        self._dfg_node_buf_v2 = (
+            _AdaptiveRowBuffer(self._dfg_node_schema_v2, self.roll_rows, self.max_buffer_memory_mb)
+            if self._dfg_node_schema_v2 is not None
+            else None
+        )
+        self._dfg_edge_buf_v2 = (
+            _AdaptiveRowBuffer(self._dfg_edge_schema_v2, self.roll_rows, self.max_buffer_memory_mb)
+            if self._dfg_edge_schema_v2 is not None
+            else None
+        )
+        self._symbol_buf_v2 = (
+            _AdaptiveRowBuffer(self._symbol_schema_v2, self.roll_rows, self.max_buffer_memory_mb)
+            if self._symbol_schema_v2 is not None
+            else None
+        )
+        self._alias_buf_v2 = (
+            _AdaptiveRowBuffer(self._alias_schema_v2, self.roll_rows, self.max_buffer_memory_mb)
+            if self._alias_schema_v2 is not None
+            else None
+        )
+        self._effect_buf_v2 = (
+            _AdaptiveRowBuffer(self._effect_schema_v2, self.roll_rows, self.max_buffer_memory_mb)
+            if self._effect_schema_v2 is not None
+            else None
+        )
 
         # Counters/indices
         self._node_file_idx = 0
@@ -123,6 +204,24 @@ class UcgStore:
         self._symbol_rows_total = 0
         self._alias_rows_total = 0
         self._effect_rows_total = 0
+        self._node_file_idx_v2 = 0
+        self._edge_file_idx_v2 = 0
+        self._cfg_block_file_idx_v2 = 0
+        self._cfg_edge_file_idx_v2 = 0
+        self._dfg_node_file_idx_v2 = 0
+        self._dfg_edge_file_idx_v2 = 0
+        self._symbol_file_idx_v2 = 0
+        self._alias_file_idx_v2 = 0
+        self._effect_file_idx_v2 = 0
+        self._node_rows_total_v2 = 0
+        self._edge_rows_total_v2 = 0
+        self._cfg_block_rows_total_v2 = 0
+        self._cfg_edge_rows_total_v2 = 0
+        self._dfg_node_rows_total_v2 = 0
+        self._dfg_edge_rows_total_v2 = 0
+        self._symbol_rows_total_v2 = 0
+        self._alias_rows_total_v2 = 0
+        self._effect_rows_total_v2 = 0
         self._bytes_written = 0
 
         # Compression
@@ -162,6 +261,10 @@ class UcgStore:
                 self._node_buf.add(_node_to_arrow_row(row))
                 if self._node_buf.should_roll():
                     self._flush_nodes()
+                if self._enable_prov_v2 and self._node_buf_v2 is not None:
+                    self._node_buf_v2.add(_node_to_arrow_row_v2(row))
+                    if self._node_buf_v2.should_roll():
+                        self._flush_nodes_v2()
             elif kind == "edge":
                 # Duck-type to tolerate equivalent rows from different module contexts
                 if not isinstance(row, EdgeRow):
@@ -182,6 +285,10 @@ class UcgStore:
                 self._edge_buf.add(_edge_to_arrow_row(row))
                 if self._edge_buf.should_roll():
                     self._flush_edges()
+                if self._enable_prov_v2 and self._edge_buf_v2 is not None:
+                    self._edge_buf_v2.add(_edge_to_arrow_row_v2(row))
+                    if self._edge_buf_v2.should_roll():
+                        self._flush_edges_v2()
             else:
                 raise ValueError(f"unknown row kind: {kind!r}")
 
@@ -203,12 +310,20 @@ class UcgStore:
                 self._cfg_block_buf.add(_cfg_block_to_arrow_row(row))
                 if self._cfg_block_buf.should_roll():
                     self._flush_cfg_blocks()
+                if self._enable_prov_v2 and self._cfg_block_buf_v2 is not None:
+                    self._cfg_block_buf_v2.add(_cfg_block_to_arrow_row_v2(row))
+                    if self._cfg_block_buf_v2.should_roll():
+                        self._flush_cfg_blocks_v2()
             elif kind == "cfg_edge":
                 if not isinstance(row, CfgEdgeRow):
                     raise TypeError("cfg_edge row must be CfgEdgeRow")
                 self._cfg_edge_buf.add(_cfg_edge_to_arrow_row(row))
                 if self._cfg_edge_buf.should_roll():
                     self._flush_cfg_edges()
+                if self._enable_prov_v2 and self._cfg_edge_buf_v2 is not None:
+                    self._cfg_edge_buf_v2.add(_cfg_edge_to_arrow_row_v2(row))
+                    if self._cfg_edge_buf_v2.should_roll():
+                        self._flush_cfg_edges_v2()
             else:
                 raise ValueError(f"unknown cfg row kind: {kind!r}")
 
@@ -223,12 +338,20 @@ class UcgStore:
                 self._dfg_node_buf.add(_dfg_node_to_arrow_row(row))
                 if self._dfg_node_buf.should_roll():
                     self._flush_dfg_nodes()
+                if self._enable_prov_v2 and self._dfg_node_buf_v2 is not None:
+                    self._dfg_node_buf_v2.add(_dfg_node_to_arrow_row_v2(row))
+                    if self._dfg_node_buf_v2.should_roll():
+                        self._flush_dfg_nodes_v2()
             elif kind == "dfg_edge":
                 if not isinstance(row, DfgEdgeRow):
                     raise TypeError("dfg_edge row must be DfgEdgeRow")
                 self._dfg_edge_buf.add(_dfg_edge_to_arrow_row(row))
                 if self._dfg_edge_buf.should_roll():
                     self._flush_dfg_edges()
+                if self._enable_prov_v2 and self._dfg_edge_buf_v2 is not None:
+                    self._dfg_edge_buf_v2.add(_dfg_edge_to_arrow_row_v2(row))
+                    if self._dfg_edge_buf_v2.should_roll():
+                        self._flush_dfg_edges_v2()
             else:
                 raise ValueError(f"unknown dfg row kind: {kind!r}")
 
@@ -243,12 +366,20 @@ class UcgStore:
                 self._symbol_buf.add(_symbol_to_arrow_row(row))
                 if self._symbol_buf.should_roll():
                     self._flush_symbols()
+                if self._enable_prov_v2 and self._symbol_buf_v2 is not None:
+                    self._symbol_buf_v2.add(_symbol_to_arrow_row_v2(row))
+                    if self._symbol_buf_v2.should_roll():
+                        self._flush_symbols_v2()
             elif kind == "alias":
                 if not isinstance(row, AliasRow):
                     raise TypeError("alias row must be AliasRow")
                 self._alias_buf.add(_alias_to_arrow_row(row))
                 if self._alias_buf.should_roll():
                     self._flush_aliases()
+                if self._enable_prov_v2 and self._alias_buf_v2 is not None:
+                    self._alias_buf_v2.add(_alias_to_arrow_row_v2(row))
+                    if self._alias_buf_v2.should_roll():
+                        self._flush_aliases_v2()
             else:
                 raise ValueError(f"unknown symbol-kind: {kind!r}")
 
@@ -261,20 +392,42 @@ class UcgStore:
             self._effect_buf.add(_effect_to_arrow_row(row))
             if self._effect_buf.should_roll():
                 self._flush_effects()
+            if self._enable_prov_v2 and self._effect_buf_v2 is not None:
+                self._effect_buf_v2.add(_effect_to_arrow_row_v2(row))
+                if self._effect_buf_v2.should_roll():
+                    self._flush_effects_v2()
 
     # ----------------------------- flush/finalize ------------------------------
 
     def flush(self) -> None:
         self._flush_nodes()
+        if self._enable_prov_v2:
+            self._flush_nodes_v2()
         self._flush_edges()
+        if self._enable_prov_v2:
+            self._flush_edges_v2()
         self._flush_anomalies()
         self._flush_cfg_blocks()
+        if self._enable_prov_v2:
+            self._flush_cfg_blocks_v2()
         self._flush_cfg_edges()
+        if self._enable_prov_v2:
+            self._flush_cfg_edges_v2()
         self._flush_dfg_nodes()
+        if self._enable_prov_v2:
+            self._flush_dfg_nodes_v2()
         self._flush_dfg_edges()
+        if self._enable_prov_v2:
+            self._flush_dfg_edges_v2()
         self._flush_symbols()
+        if self._enable_prov_v2:
+            self._flush_symbols_v2()
         self._flush_aliases()
+        if self._enable_prov_v2:
+            self._flush_aliases_v2()
         self._flush_effects()
+        if self._enable_prov_v2:
+            self._flush_effects_v2()
 
     def finalize(self, *, receipt: Dict) -> None:
         """
@@ -313,6 +466,30 @@ class UcgStore:
             "created_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "transaction_log": self._transaction_log,
         }
+        if self._enable_prov_v2:
+            meta["v2"] = {
+                "nodes_rows": self._node_rows_total_v2,
+                "edges_rows": self._edge_rows_total_v2,
+                "cfg_block_rows": self._cfg_block_rows_total_v2,
+                "cfg_edge_rows": self._cfg_edge_rows_total_v2,
+                "dfg_node_rows": self._dfg_node_rows_total_v2,
+                "dfg_edge_rows": self._dfg_edge_rows_total_v2,
+                "symbol_rows": self._symbol_rows_total_v2,
+                "alias_rows": self._alias_rows_total_v2,
+                "effect_rows": self._effect_rows_total_v2,
+                "files": {
+                    "nodes": self._node_file_idx_v2,
+                    "edges": self._edge_file_idx_v2,
+                    "cfg_blocks": self._cfg_block_file_idx_v2,
+                    "cfg_edges": self._cfg_edge_file_idx_v2,
+                    "dfg_nodes": self._dfg_node_file_idx_v2,
+                    "dfg_edges": self._dfg_edge_file_idx_v2,
+                    "symbols": self._symbol_file_idx_v2,
+                    "aliases": self._alias_file_idx_v2,
+                    "effects": self._effect_file_idx_v2,
+                },
+                "schema_version": SCHEMA_VERSION_V2,
+            }
         meta.update(receipt or {})
 
         # Integrity hashes
@@ -339,6 +516,18 @@ class UcgStore:
         self._transaction_log.append(f"wrote_nodes:{path.name}")
         self._node_buf.clear()
 
+    def _flush_nodes_v2(self) -> None:
+        if not self._enable_prov_v2 or self._node_buf_v2 is None:
+            return
+        if not self._node_buf_v2 and self._node_file_idx_v2 > 0:
+            return
+        path = self._staging / "nodes_v2" / f"{self.file_prefix}_nodes_v2_{self._node_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._node_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._node_rows_total_v2 += rows_written
+        self._node_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_nodes_v2:{path.name}")
+        self._node_buf_v2.clear()
+
     def _flush_edges(self) -> None:
         if not self._edge_buf and self._edge_file_idx > 0:
             return
@@ -348,6 +537,18 @@ class UcgStore:
         self._edge_file_idx += 1
         self._transaction_log.append(f"wrote_edges:{path.name}")
         self._edge_buf.clear()
+
+    def _flush_edges_v2(self) -> None:
+        if not self._enable_prov_v2 or self._edge_buf_v2 is None:
+            return
+        if not self._edge_buf_v2 and self._edge_file_idx_v2 > 0:
+            return
+        path = self._staging / "edges_v2" / f"{self.file_prefix}_edges_v2_{self._edge_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._edge_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._edge_rows_total_v2 += rows_written
+        self._edge_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_edges_v2:{path.name}")
+        self._edge_buf_v2.clear()
 
     def _flush_anomalies(self) -> None:
         if not self._anomaly_buf:
@@ -369,6 +570,18 @@ class UcgStore:
         self._transaction_log.append(f"wrote_cfg_blocks:{path.name}")
         self._cfg_block_buf.clear()
 
+    def _flush_cfg_blocks_v2(self) -> None:
+        if not self._enable_prov_v2 or self._cfg_block_buf_v2 is None:
+            return
+        if not self._cfg_block_buf_v2 and self._cfg_block_file_idx_v2 > 0:
+            return
+        path = self._staging / "cfg_blocks_v2" / f"{self.file_prefix}_cfg_blocks_v2_{self._cfg_block_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._cfg_block_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._cfg_block_rows_total_v2 += rows_written
+        self._cfg_block_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_cfg_blocks_v2:{path.name}")
+        self._cfg_block_buf_v2.clear()
+
     def _flush_cfg_edges(self) -> None:
         if not self._cfg_edge_buf:
             return
@@ -378,6 +591,18 @@ class UcgStore:
         self._cfg_edge_file_idx += 1
         self._transaction_log.append(f"wrote_cfg_edges:{path.name}")
         self._cfg_edge_buf.clear()
+
+    def _flush_cfg_edges_v2(self) -> None:
+        if not self._enable_prov_v2 or self._cfg_edge_buf_v2 is None:
+            return
+        if not self._cfg_edge_buf_v2 and self._cfg_edge_file_idx_v2 > 0:
+            return
+        path = self._staging / "cfg_edges_v2" / f"{self.file_prefix}_cfg_edges_v2_{self._cfg_edge_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._cfg_edge_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._cfg_edge_rows_total_v2 += rows_written
+        self._cfg_edge_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_cfg_edges_v2:{path.name}")
+        self._cfg_edge_buf_v2.clear()
 
     def _flush_dfg_nodes(self) -> None:
         if not self._dfg_node_buf:
@@ -389,6 +614,18 @@ class UcgStore:
         self._transaction_log.append(f"wrote_dfg_nodes:{path.name}")
         self._dfg_node_buf.clear()
 
+    def _flush_dfg_nodes_v2(self) -> None:
+        if not self._enable_prov_v2 or self._dfg_node_buf_v2 is None:
+            return
+        if not self._dfg_node_buf_v2 and self._dfg_node_file_idx_v2 > 0:
+            return
+        path = self._staging / "dfg_nodes_v2" / f"{self.file_prefix}_dfg_nodes_v2_{self._dfg_node_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._dfg_node_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._dfg_node_rows_total_v2 += rows_written
+        self._dfg_node_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_dfg_nodes_v2:{path.name}")
+        self._dfg_node_buf_v2.clear()
+
     def _flush_dfg_edges(self) -> None:
         if not self._dfg_edge_buf:
             return
@@ -398,6 +635,18 @@ class UcgStore:
         self._dfg_edge_file_idx += 1
         self._transaction_log.append(f"wrote_dfg_edges:{path.name}")
         self._dfg_edge_buf.clear()
+
+    def _flush_dfg_edges_v2(self) -> None:
+        if not self._enable_prov_v2 or self._dfg_edge_buf_v2 is None:
+            return
+        if not self._dfg_edge_buf_v2 and self._dfg_edge_file_idx_v2 > 0:
+            return
+        path = self._staging / "dfg_edges_v2" / f"{self.file_prefix}_dfg_edges_v2_{self._dfg_edge_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._dfg_edge_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._dfg_edge_rows_total_v2 += rows_written
+        self._dfg_edge_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_dfg_edges_v2:{path.name}")
+        self._dfg_edge_buf_v2.clear()
 
     def _flush_symbols(self) -> None:
         if not self._symbol_buf:
@@ -409,6 +658,18 @@ class UcgStore:
         self._transaction_log.append(f"wrote_symbols:{path.name}")
         self._symbol_buf.clear()
 
+    def _flush_symbols_v2(self) -> None:
+        if not self._enable_prov_v2 or self._symbol_buf_v2 is None:
+            return
+        if not self._symbol_buf_v2 and self._symbol_file_idx_v2 > 0:
+            return
+        path = self._staging / "symbols_v2" / f"{self.file_prefix}_symbols_v2_{self._symbol_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._symbol_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._symbol_rows_total_v2 += rows_written
+        self._symbol_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_symbols_v2:{path.name}")
+        self._symbol_buf_v2.clear()
+
     def _flush_aliases(self) -> None:
         if not self._alias_buf:
             return
@@ -418,6 +679,18 @@ class UcgStore:
         self._alias_file_idx += 1
         self._transaction_log.append(f"wrote_aliases:{path.name}")
         self._alias_buf.clear()
+
+    def _flush_aliases_v2(self) -> None:
+        if not self._enable_prov_v2 or self._alias_buf_v2 is None:
+            return
+        if not self._alias_buf_v2 and self._alias_file_idx_v2 > 0:
+            return
+        path = self._staging / "aliases_v2" / f"{self.file_prefix}_aliases_v2_{self._alias_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._alias_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._alias_rows_total_v2 += rows_written
+        self._alias_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_aliases_v2:{path.name}")
+        self._alias_buf_v2.clear()
 
     def _flush_effects(self) -> None:
         if not self._effect_buf:
@@ -429,18 +702,39 @@ class UcgStore:
         self._transaction_log.append(f"wrote_effects:{path.name}")
         self._effect_buf.clear()
 
+    def _flush_effects_v2(self) -> None:
+        if not self._enable_prov_v2 or self._effect_buf_v2 is None:
+            return
+        if not self._effect_buf_v2 and self._effect_file_idx_v2 > 0:
+            return
+        path = self._staging / "effects_v2" / f"{self.file_prefix}_effects_v2_{self._effect_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._effect_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._effect_rows_total_v2 += rows_written
+        self._effect_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_effects_v2:{path.name}")
+        self._effect_buf_v2.clear()
+
     # ----------------------------- internals: write helpers --------------------
 
-    def _verified_write(self, buf: "_AdaptiveRowBuffer", path: Path) -> int:
+    def _verified_write(
+        self,
+        buf: "_AdaptiveRowBuffer",
+        path: Path,
+        *,
+        schema_version: str = SCHEMA_VERSION,
+    ) -> int:
         """Write Parquet and verify on disk; clean up on failure. Returns row count."""
         try:
             tbl = buf.to_table()
             # append schema_version column if missing
             if "schema_version" not in tbl.schema.names:
-                tbl = tbl.append_column("schema_version", pa.array([SCHEMA_VERSION] * tbl.num_rows, type=pa.string()))
+                tbl = tbl.append_column(
+                    "schema_version",
+                    pa.array([schema_version] * tbl.num_rows, type=pa.string()),
+                )
             # add schema metadata
             meta = dict(tbl.schema.metadata or {})
-            meta[b"version"] = SCHEMA_VERSION.encode("utf-8")
+            meta[b"version"] = schema_version.encode("utf-8")
             tbl = tbl.replace_schema_metadata(meta)
 
             pq.write_table(tbl, path, **self._pq_write_kwargs)
@@ -490,70 +784,128 @@ class UcgStore:
         return hashes
 
     def _write_query_hints(self) -> None:
-        catalog = {
-            "tables": {
-                "nodes": {
-                    "path": "nodes/*.parquet",
-                    "schema": str(self._node_schema),
-                    "partitions": ["lang", "kind"],
-                    "row_count": self._node_rows_total,
-                },
-                "edges": {
-                    "path": "edges/*.parquet",
-                    "schema": str(self._edge_schema),
-                    "partitions": ["lang", "kind"],
-                    "row_count": self._edge_rows_total,
-                },
-                "anomalies": {
-                    "path": "anomalies/*.parquet",
-                    "schema": str(self._anomaly_schema),
-                    "partitions": [],
-                    "row_count": self._anomaly_rows_total,
-                },
-                "cfg_blocks": {
-                    "path": "cfg_blocks/*.parquet",
-                    "schema": str(self._cfg_block_schema),
-                    "partitions": ["lang", "kind"],
-                    "row_count": self._cfg_block_rows_total,
-                },
-                "cfg_edges": {
-                    "path": "cfg_edges/*.parquet",
-                    "schema": str(self._cfg_edge_schema),
-                    "partitions": ["lang", "kind"],
-                    "row_count": self._cfg_edge_rows_total,
-                },
-                "dfg_nodes": {
-                    "path": "dfg_nodes/*.parquet",
-                    "schema": str(self._dfg_node_schema),
-                    "partitions": ["lang", "kind"],
-                    "row_count": self._dfg_node_rows_total,
-                },
-                "dfg_edges": {
-                    "path": "dfg_edges/*.parquet",
-                    "schema": str(self._dfg_edge_schema),
-                    "partitions": ["lang", "kind"],
-                    "row_count": self._dfg_edge_rows_total,
-                },
-                "symbols": {
-                    "path": "symbols/*.parquet",
-                    "schema": str(self._symbol_schema),
-                    "partitions": ["lang", "kind"],
-                    "row_count": self._symbol_rows_total,
-                },
-                "aliases": {
-                    "path": "aliases/*.parquet",
-                    "schema": str(self._alias_schema),
-                    "partitions": ["alias_kind"],
-                    "row_count": self._alias_rows_total,
-                },
-                "effects": {
-                    "path": "effects/*.parquet",
-                    "schema": str(self._effect_schema),
-                    "partitions": ["lang", "kind"],
-                    "row_count": self._effect_rows_total,
-                },
-            }
+        catalog_tables = {
+            "nodes": {
+                "path": "nodes/*.parquet",
+                "schema": str(self._node_schema),
+                "partitions": ["lang", "kind"],
+                "row_count": self._node_rows_total,
+            },
+            "edges": {
+                "path": "edges/*.parquet",
+                "schema": str(self._edge_schema),
+                "partitions": ["lang", "kind"],
+                "row_count": self._edge_rows_total,
+            },
+            "anomalies": {
+                "path": "anomalies/*.parquet",
+                "schema": str(self._anomaly_schema),
+                "partitions": [],
+                "row_count": self._anomaly_rows_total,
+            },
+            "cfg_blocks": {
+                "path": "cfg_blocks/*.parquet",
+                "schema": str(self._cfg_block_schema),
+                "partitions": ["lang", "kind"],
+                "row_count": self._cfg_block_rows_total,
+            },
+            "cfg_edges": {
+                "path": "cfg_edges/*.parquet",
+                "schema": str(self._cfg_edge_schema),
+                "partitions": ["lang", "kind"],
+                "row_count": self._cfg_edge_rows_total,
+            },
+            "dfg_nodes": {
+                "path": "dfg_nodes/*.parquet",
+                "schema": str(self._dfg_node_schema),
+                "partitions": ["lang", "kind"],
+                "row_count": self._dfg_node_rows_total,
+            },
+            "dfg_edges": {
+                "path": "dfg_edges/*.parquet",
+                "schema": str(self._dfg_edge_schema),
+                "partitions": ["lang", "kind"],
+                "row_count": self._dfg_edge_rows_total,
+            },
+            "symbols": {
+                "path": "symbols/*.parquet",
+                "schema": str(self._symbol_schema),
+                "partitions": ["lang", "kind"],
+                "row_count": self._symbol_rows_total,
+            },
+            "aliases": {
+                "path": "aliases/*.parquet",
+                "schema": str(self._alias_schema),
+                "partitions": ["alias_kind"],
+                "row_count": self._alias_rows_total,
+            },
+            "effects": {
+                "path": "effects/*.parquet",
+                "schema": str(self._effect_schema),
+                "partitions": ["lang", "kind"],
+                "row_count": self._effect_rows_total,
+            },
         }
+        if self._enable_prov_v2:
+            catalog_tables.update(
+                {
+                    "nodes_v2": {
+                        "path": "nodes_v2/*.parquet",
+                        "schema": str(self._node_schema_v2),
+                        "partitions": ["lang", "kind"],
+                        "row_count": self._node_rows_total_v2,
+                    },
+                    "edges_v2": {
+                        "path": "edges_v2/*.parquet",
+                        "schema": str(self._edge_schema_v2),
+                        "partitions": ["lang", "kind"],
+                        "row_count": self._edge_rows_total_v2,
+                    },
+                    "cfg_blocks_v2": {
+                        "path": "cfg_blocks_v2/*.parquet",
+                        "schema": str(self._cfg_block_schema_v2),
+                        "partitions": ["lang", "kind"],
+                        "row_count": self._cfg_block_rows_total_v2,
+                    },
+                    "cfg_edges_v2": {
+                        "path": "cfg_edges_v2/*.parquet",
+                        "schema": str(self._cfg_edge_schema_v2),
+                        "partitions": ["lang", "kind"],
+                        "row_count": self._cfg_edge_rows_total_v2,
+                    },
+                    "dfg_nodes_v2": {
+                        "path": "dfg_nodes_v2/*.parquet",
+                        "schema": str(self._dfg_node_schema_v2),
+                        "partitions": ["lang", "kind"],
+                        "row_count": self._dfg_node_rows_total_v2,
+                    },
+                    "dfg_edges_v2": {
+                        "path": "dfg_edges_v2/*.parquet",
+                        "schema": str(self._dfg_edge_schema_v2),
+                        "partitions": ["lang", "kind"],
+                        "row_count": self._dfg_edge_rows_total_v2,
+                    },
+                    "symbols_v2": {
+                        "path": "symbols_v2/*.parquet",
+                        "schema": str(self._symbol_schema_v2),
+                        "partitions": ["lang", "kind"],
+                        "row_count": self._symbol_rows_total_v2,
+                    },
+                    "aliases_v2": {
+                        "path": "aliases_v2/*.parquet",
+                        "schema": str(self._alias_schema_v2),
+                        "partitions": ["alias_kind"],
+                        "row_count": self._alias_rows_total_v2,
+                    },
+                    "effects_v2": {
+                        "path": "effects_v2/*.parquet",
+                        "schema": str(self._effect_schema_v2),
+                        "partitions": ["lang", "kind"],
+                        "row_count": self._effect_rows_total_v2,
+                    },
+                }
+            )
+        catalog = {"tables": catalog_tables}
         (self._staging / "catalog.json").write_text(json.dumps(catalog, indent=2), encoding="utf-8")
 
         duckdb_sql = [
@@ -568,6 +920,22 @@ class UcgStore:
             "CREATE TABLE symbols AS SELECT * FROM read_parquet('symbols/*.parquet');",
             "CREATE TABLE aliases AS SELECT * FROM read_parquet('aliases/*.parquet');",
             "CREATE TABLE effects AS SELECT * FROM read_parquet('effects/*.parquet');",
+        ]
+        if self._enable_prov_v2:
+            duckdb_sql.extend(
+                [
+                    "CREATE TABLE nodes_v2 AS SELECT * FROM read_parquet('nodes_v2/*.parquet');",
+                    "CREATE TABLE edges_v2 AS SELECT * FROM read_parquet('edges_v2/*.parquet');",
+                    "CREATE TABLE cfg_blocks_v2 AS SELECT * FROM read_parquet('cfg_blocks_v2/*.parquet');",
+                    "CREATE TABLE cfg_edges_v2 AS SELECT * FROM read_parquet('cfg_edges_v2/*.parquet');",
+                    "CREATE TABLE dfg_nodes_v2 AS SELECT * FROM read_parquet('dfg_nodes_v2/*.parquet');",
+                    "CREATE TABLE dfg_edges_v2 AS SELECT * FROM read_parquet('dfg_edges_v2/*.parquet');",
+                    "CREATE TABLE symbols_v2 AS SELECT * FROM read_parquet('symbols_v2/*.parquet');",
+                    "CREATE TABLE aliases_v2 AS SELECT * FROM read_parquet('aliases_v2/*.parquet');",
+                    "CREATE TABLE effects_v2 AS SELECT * FROM read_parquet('effects_v2/*.parquet');",
+                ]
+            )
+        duckdb_sql += [
             "",
             "-- Suggested indexes",
             "CREATE INDEX idx_nodes_kind ON nodes(kind);",
@@ -590,6 +958,30 @@ class UcgStore:
             "CREATE INDEX idx_effects_carr ON effects(carrier);",
             "CREATE INDEX idx_effects_path ON effects(path);",
         ]
+        if self._enable_prov_v2:
+            duckdb_sql.extend(
+                [
+                    "CREATE INDEX idx_nodes_v2_kind ON nodes_v2(kind);",
+                    "CREATE INDEX idx_nodes_v2_path ON nodes_v2(path);",
+                    "CREATE INDEX idx_edges_v2_src ON edges_v2(src_id);",
+                    "CREATE INDEX idx_edges_v2_dst ON edges_v2(dst_id);",
+                    "CREATE INDEX idx_cfg_blocks_v2_func ON cfg_blocks_v2(func_id);",
+                    "CREATE INDEX idx_cfg_edges_v2_src ON cfg_edges_v2(src_block_id);",
+                    "CREATE INDEX idx_cfg_edges_v2_dst ON cfg_edges_v2(dst_block_id);",
+                    "CREATE INDEX idx_dfg_nodes_v2_func ON dfg_nodes_v2(func_id);",
+                    "CREATE INDEX idx_dfg_nodes_v2_name ON dfg_nodes_v2(name);",
+                    "CREATE INDEX idx_dfg_edges_v2_src ON dfg_edges_v2(src_id);",
+                    "CREATE INDEX idx_dfg_edges_v2_dst ON dfg_edges_v2(dst_id);",
+                    "CREATE INDEX idx_symbols_v2_scope ON symbols_v2(scope_id);",
+                    "CREATE INDEX idx_symbols_v2_name ON symbols_v2(name);",
+                    "CREATE INDEX idx_aliases_v2_kind ON aliases_v2(alias_kind);",
+                    "CREATE INDEX idx_aliases_v2_alias ON aliases_v2(alias_id);",
+                    "CREATE INDEX idx_aliases_v2_tgt ON aliases_v2(target_symbol_id);",
+                    "CREATE INDEX idx_effects_v2_kind ON effects_v2(kind);",
+                    "CREATE INDEX idx_effects_v2_carr ON effects_v2(carrier);",
+                    "CREATE INDEX idx_effects_v2_path ON effects_v2(path);",
+                ]
+            )
         (self._staging / "schema.sql").write_text("\n".join(duckdb_sql), encoding="utf-8")
 
     def _atomic_publish(self) -> None:
@@ -630,6 +1022,33 @@ def _node_schema() -> pa.schema:
     return schema.with_metadata({"version": SCHEMA_VERSION})
 
 
+def _node_schema_v2() -> pa.schema:
+    schema = pa.schema(
+        [
+            pa.field("id", pa.string()),
+            pa.field("kind", pa.string()),
+            pa.field("name", pa.string()),
+            pa.field("path", pa.string()),
+            pa.field("lang", pa.string()),
+            pa.field("attrs_json", pa.string()),
+            pa.field("prov_path", pa.string()),
+            pa.field("prov_blob_sha", pa.string()),
+            pa.field("prov_lang", pa.string()),
+            pa.field("prov_grammar_sha", pa.string()),
+            pa.field("prov_run_id", pa.string()),
+            pa.field("prov_config_hash", pa.string()),
+            pa.field("prov_byte_start", pa.int64()),
+            pa.field("prov_byte_end", pa.int64()),
+            pa.field("prov_line_start", pa.int32()),
+            pa.field("prov_line_end", pa.int32()),
+            pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+            pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+            pa.field("schema_version", pa.string()),
+        ]
+    )
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
+
+
 def _edge_schema() -> pa.schema:
     schema = pa.schema(
         [
@@ -654,6 +1073,34 @@ def _edge_schema() -> pa.schema:
         ]
     )
     return schema.with_metadata({"version": SCHEMA_VERSION})
+
+
+def _edge_schema_v2() -> pa.schema:
+    schema = pa.schema(
+        [
+            pa.field("id", pa.string()),
+            pa.field("kind", pa.string()),
+            pa.field("src_id", pa.string()),
+            pa.field("dst_id", pa.string()),
+            pa.field("path", pa.string()),
+            pa.field("lang", pa.string()),
+            pa.field("attrs_json", pa.string()),
+            pa.field("prov_path", pa.string()),
+            pa.field("prov_blob_sha", pa.string()),
+            pa.field("prov_lang", pa.string()),
+            pa.field("prov_grammar_sha", pa.string()),
+            pa.field("prov_run_id", pa.string()),
+            pa.field("prov_config_hash", pa.string()),
+            pa.field("prov_byte_start", pa.int64()),
+            pa.field("prov_byte_end", pa.int64()),
+            pa.field("prov_line_start", pa.int32()),
+            pa.field("prov_line_end", pa.int32()),
+            pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+            pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+            pa.field("schema_version", pa.string()),
+        ]
+    )
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
 
 
 def _anomaly_schema() -> pa.schema:
@@ -697,6 +1144,32 @@ def _cfg_block_schema() -> pa.schema:
     return schema.with_metadata({"version": SCHEMA_VERSION})
 
 
+def _cfg_block_schema_v2() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("func_id", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("index", pa.int32()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+        pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
+
+
 def _cfg_edge_schema() -> pa.schema:
     schema = pa.schema([
         pa.field("id", pa.string()),
@@ -720,6 +1193,33 @@ def _cfg_edge_schema() -> pa.schema:
         pa.field("schema_version", pa.string()),
     ])
     return schema.with_metadata({"version": SCHEMA_VERSION})
+
+
+def _cfg_edge_schema_v2() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("func_id", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("src_block_id", pa.string()),
+        pa.field("dst_block_id", pa.string()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+        pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
 
 
 def _dfg_node_schema() -> pa.schema:
@@ -747,6 +1247,33 @@ def _dfg_node_schema() -> pa.schema:
     return schema.with_metadata({"version": SCHEMA_VERSION})
 
 
+def _dfg_node_schema_v2() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("func_id", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("name", pa.string()),
+        pa.field("version", pa.int32()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+        pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
+
+
 def _dfg_edge_schema() -> pa.schema:
     schema = pa.schema([
         pa.field("id", pa.string()),
@@ -770,6 +1297,33 @@ def _dfg_edge_schema() -> pa.schema:
         pa.field("schema_version", pa.string()),
     ])
     return schema.with_metadata({"version": SCHEMA_VERSION})
+
+
+def _dfg_edge_schema_v2() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("func_id", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("src_id", pa.string()),
+        pa.field("dst_id", pa.string()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+        pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
 
 
 def _symbol_schema() -> pa.schema:
@@ -798,6 +1352,34 @@ def _symbol_schema() -> pa.schema:
     return schema.with_metadata({"version": SCHEMA_VERSION})
 
 
+def _symbol_schema_v2() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("scope_id", pa.string()),
+        pa.field("name", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("visibility", pa.string()),
+        pa.field("is_dynamic", pa.bool_()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+        pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
+
+
 def _alias_schema() -> pa.schema:
     schema = pa.schema([
         pa.field("id", pa.string()),
@@ -821,6 +1403,33 @@ def _alias_schema() -> pa.schema:
         pa.field("schema_version", pa.string()),
     ])
     return schema.with_metadata({"version": SCHEMA_VERSION})
+
+
+def _alias_schema_v2() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("alias_kind", pa.string()),
+        pa.field("alias_id", pa.string()),
+        pa.field("target_symbol_id", pa.string()),
+        pa.field("alias_name", pa.string()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+        pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
 
 
 def _effect_schema() -> pa.schema:
@@ -847,30 +1456,60 @@ def _effect_schema() -> pa.schema:
     return schema.with_metadata({"version": SCHEMA_VERSION})
 
 
-def _node_to_arrow_row(n: NodeRow) -> Dict:
-    return dict(
+def _effect_schema_v2() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("carrier", pa.string()),
+        pa.field("args_json", pa.string()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+        pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
+
+
+def _node_base_row(n: NodeRow) -> Dict:
+    data = dict(
         id=n.id,
         kind=n.kind.value if isinstance(n.kind, NodeKind) else str(n.kind),
         name=n.name,
         path=n.path,
         lang=getattr(n.lang, "value", str(n.lang)),
         attrs_json=n.attrs_json,
-        prov_path=n.prov.path,
-        prov_blob_sha=n.prov.blob_sha,
-        prov_lang=getattr(n.prov.lang, "value", str(n.prov.lang)),
-        prov_grammar_sha=n.prov.grammar_sha,
-        prov_run_id=n.prov.run_id,
-        prov_config_hash=n.prov.config_hash,
-        prov_byte_start=int(n.prov.byte_start),
-        prov_byte_end=int(n.prov.byte_end),
-        prov_line_start=int(n.prov.line_start),
-        prov_line_end=int(n.prov.line_end),
-        schema_version=SCHEMA_VERSION,
     )
+    data.update(n.prov.base_columns())
+    return data
 
 
-def _edge_to_arrow_row(e: EdgeRow) -> Dict:
-    return dict(
+def _node_to_arrow_row(n: NodeRow) -> Dict:
+    data = _node_base_row(n)
+    data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
+def _node_to_arrow_row_v2(n: NodeRow) -> Dict:
+    data = _node_base_row(n)
+    data.update(n.prov.v2_columns())
+    data["schema_version"] = SCHEMA_VERSION_V2
+    return data
+
+
+def _edge_base_row(e: EdgeRow) -> Dict:
+    data = dict(
         id=e.id,
         kind=e.kind.value if isinstance(e.kind, EdgeKind) else str(e.kind),
         src_id=e.src_id,
@@ -878,18 +1517,22 @@ def _edge_to_arrow_row(e: EdgeRow) -> Dict:
         path=e.path,
         lang=getattr(e.lang, "value", str(e.lang)),
         attrs_json=e.attrs_json,
-        prov_path=e.prov.path,
-        prov_blob_sha=e.prov.blob_sha,
-        prov_lang=getattr(e.prov.lang, "value", str(e.prov.lang)),
-        prov_grammar_sha=e.prov.grammar_sha,
-        prov_run_id=e.prov.run_id,
-        prov_config_hash=e.prov.config_hash,
-        prov_byte_start=int(e.prov.byte_start),
-        prov_byte_end=int(e.prov.byte_end),
-        prov_line_start=int(e.prov.line_start),
-        prov_line_end=int(e.prov.line_end),
-        schema_version=SCHEMA_VERSION,
     )
+    data.update(e.prov.base_columns())
+    return data
+
+
+def _edge_to_arrow_row(e: EdgeRow) -> Dict:
+    data = _edge_base_row(e)
+    data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
+def _edge_to_arrow_row_v2(e: EdgeRow) -> Dict:
+    data = _edge_base_row(e)
+    data.update(e.prov.v2_columns())
+    data["schema_version"] = SCHEMA_VERSION_V2
+    return data
 
 
 def _anomaly_to_arrow_row(a: Anomaly) -> Dict:
@@ -912,8 +1555,8 @@ def _anomaly_to_arrow_row(a: Anomaly) -> Dict:
     )
 
 
-def _cfg_block_to_arrow_row(b: BlockRow) -> Dict:
-    return dict(
+def _cfg_block_base_row(b: BlockRow) -> Dict:
+    data = dict(
         id=b.id,
         func_id=b.func_id,
         kind=b.kind.value if hasattr(b.kind, "value") else str(b.kind),
@@ -921,22 +1564,26 @@ def _cfg_block_to_arrow_row(b: BlockRow) -> Dict:
         path=b.path,
         lang=getattr(b.lang, "value", str(b.lang)),
         attrs_json=b.attrs_json,
-        prov_path=b.prov.path,
-        prov_blob_sha=b.prov.blob_sha,
-        prov_lang=getattr(b.prov.lang, "value", str(b.prov.lang)),
-        prov_grammar_sha=b.prov.grammar_sha,
-        prov_run_id=b.prov.run_id,
-        prov_config_hash=b.prov.config_hash,
-        prov_byte_start=int(b.prov.byte_start),
-        prov_byte_end=int(b.prov.byte_end),
-        prov_line_start=int(b.prov.line_start),
-        prov_line_end=int(b.prov.line_end),
-        schema_version=SCHEMA_VERSION,
     )
+    data.update(b.prov.base_columns())
+    return data
 
 
-def _cfg_edge_to_arrow_row(e: CfgEdgeRow) -> Dict:
-    return dict(
+def _cfg_block_to_arrow_row(b: BlockRow) -> Dict:
+    data = _cfg_block_base_row(b)
+    data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
+def _cfg_block_to_arrow_row_v2(b: BlockRow) -> Dict:
+    data = _cfg_block_base_row(b)
+    data.update(b.prov.v2_columns())
+    data["schema_version"] = SCHEMA_VERSION_V2
+    return data
+
+
+def _cfg_edge_base_row(e: CfgEdgeRow) -> Dict:
+    data = dict(
         id=e.id,
         func_id=e.func_id,
         kind=e.kind.value if hasattr(e.kind, "value") else str(e.kind),
@@ -945,22 +1592,26 @@ def _cfg_edge_to_arrow_row(e: CfgEdgeRow) -> Dict:
         path=e.path,
         lang=getattr(e.lang, "value", str(e.lang)),
         attrs_json=e.attrs_json,
-        prov_path=e.prov.path,
-        prov_blob_sha=e.prov.blob_sha,
-        prov_lang=getattr(e.prov.lang, "value", str(e.prov.lang)),
-        prov_grammar_sha=e.prov.grammar_sha,
-        prov_run_id=e.prov.run_id,
-        prov_config_hash=e.prov.config_hash,
-        prov_byte_start=int(e.prov.byte_start),
-        prov_byte_end=int(e.prov.byte_end),
-        prov_line_start=int(e.prov.line_start),
-        prov_line_end=int(e.prov.line_end),
-        schema_version=SCHEMA_VERSION,
     )
+    data.update(e.prov.base_columns())
+    return data
 
 
-def _dfg_node_to_arrow_row(n: DfgNodeRow) -> Dict:
-    return dict(
+def _cfg_edge_to_arrow_row(e: CfgEdgeRow) -> Dict:
+    data = _cfg_edge_base_row(e)
+    data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
+def _cfg_edge_to_arrow_row_v2(e: CfgEdgeRow) -> Dict:
+    data = _cfg_edge_base_row(e)
+    data.update(e.prov.v2_columns())
+    data["schema_version"] = SCHEMA_VERSION_V2
+    return data
+
+
+def _dfg_node_base_row(n: DfgNodeRow) -> Dict:
+    data = dict(
         id=n.id,
         func_id=n.func_id,
         kind=n.kind.value if hasattr(n.kind, "value") else str(n.kind),
@@ -969,22 +1620,26 @@ def _dfg_node_to_arrow_row(n: DfgNodeRow) -> Dict:
         path=n.path,
         lang=getattr(n.lang, "value", str(n.lang)),
         attrs_json=n.attrs_json,
-        prov_path=n.prov.path,
-        prov_blob_sha=n.prov.blob_sha,
-        prov_lang=getattr(n.prov.lang, "value", str(n.prov.lang)),
-        prov_grammar_sha=n.prov.grammar_sha,
-        prov_run_id=n.prov.run_id,
-        prov_config_hash=n.prov.config_hash,
-        prov_byte_start=int(n.prov.byte_start),
-        prov_byte_end=int(n.prov.byte_end),
-        prov_line_start=int(n.prov.line_start),
-        prov_line_end=int(n.prov.line_end),
-        schema_version=SCHEMA_VERSION,
     )
+    data.update(n.prov.base_columns())
+    return data
 
 
-def _dfg_edge_to_arrow_row(e: DfgEdgeRow) -> Dict:
-    return dict(
+def _dfg_node_to_arrow_row(n: DfgNodeRow) -> Dict:
+    data = _dfg_node_base_row(n)
+    data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
+def _dfg_node_to_arrow_row_v2(n: DfgNodeRow) -> Dict:
+    data = _dfg_node_base_row(n)
+    data.update(n.prov.v2_columns())
+    data["schema_version"] = SCHEMA_VERSION_V2
+    return data
+
+
+def _dfg_edge_base_row(e: DfgEdgeRow) -> Dict:
+    data = dict(
         id=e.id,
         func_id=e.func_id,
         kind=e.kind.value if hasattr(e.kind, "value") else str(e.kind),
@@ -993,22 +1648,26 @@ def _dfg_edge_to_arrow_row(e: DfgEdgeRow) -> Dict:
         path=e.path,
         lang=getattr(e.lang, "value", str(e.lang)),
         attrs_json=e.attrs_json,
-        prov_path=e.prov.path,
-        prov_blob_sha=e.prov.blob_sha,
-        prov_lang=getattr(e.prov.lang, "value", str(e.prov.lang)),
-        prov_grammar_sha=e.prov.grammar_sha,
-        prov_run_id=e.prov.run_id,
-        prov_config_hash=e.prov.config_hash,
-        prov_byte_start=int(e.prov.byte_start),
-        prov_byte_end=int(e.prov.byte_end),
-        prov_line_start=int(e.prov.line_start),
-        prov_line_end=int(e.prov.line_end),
-        schema_version=SCHEMA_VERSION,
     )
+    data.update(e.prov.base_columns())
+    return data
 
 
-def _symbol_to_arrow_row(s: SymbolRow) -> Dict:
-    return dict(
+def _dfg_edge_to_arrow_row(e: DfgEdgeRow) -> Dict:
+    data = _dfg_edge_base_row(e)
+    data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
+def _dfg_edge_to_arrow_row_v2(e: DfgEdgeRow) -> Dict:
+    data = _dfg_edge_base_row(e)
+    data.update(e.prov.v2_columns())
+    data["schema_version"] = SCHEMA_VERSION_V2
+    return data
+
+
+def _symbol_base_row(s: SymbolRow) -> Dict:
+    data = dict(
         id=s.id,
         scope_id=s.scope_id,
         name=s.name,
@@ -1018,22 +1677,26 @@ def _symbol_to_arrow_row(s: SymbolRow) -> Dict:
         path=s.path,
         lang=getattr(s.lang, "value", str(s.lang)),
         attrs_json=s.attrs_json,
-        prov_path=s.prov.path,
-        prov_blob_sha=s.prov.blob_sha,
-        prov_lang=getattr(s.prov.lang, "value", str(s.prov.lang)),
-        prov_grammar_sha=s.prov.grammar_sha,
-        prov_run_id=s.prov.run_id,
-        prov_config_hash=s.prov.config_hash,
-        prov_byte_start=int(s.prov.byte_start),
-        prov_byte_end=int(s.prov.byte_end),
-        prov_line_start=int(s.prov.line_start),
-        prov_line_end=int(s.prov.line_end),
-        schema_version=SCHEMA_VERSION,
     )
+    data.update(s.prov.base_columns())
+    return data
 
 
-def _alias_to_arrow_row(a: AliasRow) -> Dict:
-    return dict(
+def _symbol_to_arrow_row(s: SymbolRow) -> Dict:
+    data = _symbol_base_row(s)
+    data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
+def _symbol_to_arrow_row_v2(s: SymbolRow) -> Dict:
+    data = _symbol_base_row(s)
+    data.update(s.prov.v2_columns())
+    data["schema_version"] = SCHEMA_VERSION_V2
+    return data
+
+
+def _alias_base_row(a: AliasRow) -> Dict:
+    data = dict(
         id=a.id,
         alias_kind=a.alias_kind.value if hasattr(a.alias_kind, "value") else str(a.alias_kind),
         alias_id=a.alias_id,
@@ -1042,22 +1705,26 @@ def _alias_to_arrow_row(a: AliasRow) -> Dict:
         path=a.path,
         lang=getattr(a.lang, "value", str(a.lang)),
         attrs_json=a.attrs_json,
-        prov_path=a.prov.path,
-        prov_blob_sha=a.prov.blob_sha,
-        prov_lang=getattr(a.prov.lang, "value", str(a.prov.lang)),
-        prov_grammar_sha=a.prov.grammar_sha,
-        prov_run_id=a.prov.run_id,
-        prov_config_hash=a.prov.config_hash,
-        prov_byte_start=int(a.prov.byte_start),
-        prov_byte_end=int(a.prov.byte_end),
-        prov_line_start=int(a.prov.line_start),
-        prov_line_end=int(a.prov.line_end),
-        schema_version=SCHEMA_VERSION,
     )
+    data.update(a.prov.base_columns())
+    return data
 
 
-def _effect_to_arrow_row(r: EffectRow) -> Dict:
-    return dict(
+def _alias_to_arrow_row(a: AliasRow) -> Dict:
+    data = _alias_base_row(a)
+    data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
+def _alias_to_arrow_row_v2(a: AliasRow) -> Dict:
+    data = _alias_base_row(a)
+    data.update(a.prov.v2_columns())
+    data["schema_version"] = SCHEMA_VERSION_V2
+    return data
+
+
+def _effect_base_row(r: EffectRow) -> Dict:
+    data = dict(
         id=r.id,
         kind=r.kind.value if hasattr(r.kind, "value") else str(r.kind),
         carrier=r.carrier,
@@ -1065,18 +1732,22 @@ def _effect_to_arrow_row(r: EffectRow) -> Dict:
         path=r.path,
         lang=getattr(r.lang, "value", str(r.lang)),
         attrs_json=r.attrs_json,
-        prov_path=r.prov.path,
-        prov_blob_sha=r.prov.blob_sha,
-        prov_lang=getattr(r.prov.lang, "value", str(r.prov.lang)),
-        prov_grammar_sha=r.prov.grammar_sha,
-        prov_run_id=r.prov.run_id,
-        prov_config_hash=r.prov.config_hash,
-        prov_byte_start=int(r.prov.byte_start),
-        prov_byte_end=int(r.prov.byte_end),
-        prov_line_start=int(r.prov.line_start),
-        prov_line_end=int(r.prov.line_end),
-        schema_version=SCHEMA_VERSION,
     )
+    data.update(r.prov.base_columns())
+    return data
+
+
+def _effect_to_arrow_row(r: EffectRow) -> Dict:
+    data = _effect_base_row(r)
+    data["schema_version"] = SCHEMA_VERSION
+    return data
+
+
+def _effect_to_arrow_row_v2(r: EffectRow) -> Dict:
+    data = _effect_base_row(r)
+    data.update(r.prov.v2_columns())
+    data["schema_version"] = SCHEMA_VERSION_V2
+    return data
 
 
 # ============================== buffers =======================================
