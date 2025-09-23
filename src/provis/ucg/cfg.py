@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from .discovery import Anomaly, AnomalyKind, AnomalySink, FileMeta, Language, Severity
-from .parser_registry import CstEvent, CstEventKind, DriverInfo, ParseStream
+from .parser_registry import CstEvent, CstEventKind, DriverInfo
 from .provenance import ProvenanceV2, build_provenance, build_provenance_from_event
 
 
@@ -171,16 +171,9 @@ class CfgBuilder:
 
     # -------- public API
 
-    def build(self, ps: ParseStream, sink: AnomalySink) -> Iterator[Tuple[str, object]]:
-        fm = ps.file
-        info: Optional[DriverInfo] = ps.driver
+    def build(self, fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink) -> Iterator[Tuple[str, object]]:
         adapter = _Adapter(fm.lang)
-
-        if not ps.ok or ps.events is None:
-            sink.emit(Anomaly(
-                path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED, severity=Severity.ERROR,
-                detail=ps.error or "parse stream missing",
-            ))
+        if not events:
             return
 
         func_stack: List[_FuncState] = []
@@ -221,7 +214,7 @@ class CfgBuilder:
                 prov=prov(ev),
             )
 
-        for ev in ps.events:
+        for ev in events:
             # Open a function on ENTER
             if ev.kind == CstEventKind.ENTER and adapter.is_function(ev.type):
                 # Function identity: start-based for stability
@@ -463,6 +456,6 @@ def _is_try_related(adapter: _Adapter, t: str) -> bool:
 # Public convenience
 # ==============================================================================
 
-def build_cfg(ps: ParseStream, sink: AnomalySink, cfg: Optional[CfgConfig] = None) -> Iterator[Tuple[str, object]]:
+def build_cfg(fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink, cfg: Optional[CfgConfig] = None) -> Iterator[Tuple[str, object]]:
     builder = CfgBuilder(cfg)
-    yield from builder.build(ps, sink)
+    yield from builder.build(fm, info, events, sink)

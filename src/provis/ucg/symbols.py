@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from .discovery import Anomaly, AnomalyKind, AnomalySink, FileMeta, Language, Severity
-from .parser_registry import CstEvent, CstEventKind, DriverInfo, ParseStream
+from .parser_registry import CstEvent, CstEventKind, DriverInfo
 from .provenance import ProvenanceV2, build_provenance_from_event
 
 
@@ -186,7 +186,7 @@ class _BuildState:
 # Public API
 # ==============================================================================
 
-def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfig] = None) -> Iterator[Tuple[str, object]]:
+def build_symbols(fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink, cfg: Optional[SymbolsConfig] = None) -> Iterator[Tuple[str, object]]:
     """
     Streaming symbol + alias extraction with conservative semantics.
     Emits:
@@ -194,16 +194,10 @@ def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfi
       - ("alias", AliasRow)
     """
     cfg = cfg or SymbolsConfig()
-    fm = ps.file
-    info: Optional[DriverInfo] = ps.driver
     ad = _Adapter(fm.lang)
     st = _BuildState(adapter=ad, file=fm, driver=info, cfg=cfg)
 
-    if not ps.ok or ps.events is None:
-        sink.emit(Anomaly(
-            path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED, severity=Severity.ERROR,
-            detail=ps.error or "parse stream missing",
-        ))
+    if not events:
         return
 
     # Initialize module/file scope (stable id)
@@ -226,7 +220,7 @@ def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfi
     else:
         st.scope_stack.append(_Scope(id=mod_scope_id, kind=SymbolKind.MODULE, name=module_name, byte_start=0, parent=None))
 
-    for ev in ps.events:
+    for ev in events:
         if ev.kind == CstEventKind.ENTER:
             # New function/class scopes
             if ad.is_class(ev.type):

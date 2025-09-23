@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 from .discovery import FileMeta, Language, Anomaly, AnomalyKind, AnomalySink, Severity
-from .parser_registry import CstEvent, CstEventKind, DriverInfo, ParseStream
+from .parser_registry import CstEvent, CstEventKind, DriverInfo
 from .provenance import ProvenanceV2, build_provenance_from_event
 
 
@@ -70,21 +70,15 @@ def _compact(d: dict) -> str:
 # Builders
 # ==============================================================================
 
-def build_effects(ps: ParseStream, sink: AnomalySink, cfg: Optional[EffectsConfig] = None) -> Iterator[Tuple[str, EffectRow]]:
+def build_effects(fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink, cfg: Optional[EffectsConfig] = None) -> Iterator[Tuple[str, EffectRow]]:
     """
     Streaming, conservative extraction of "effect carriers":
       - decorators, call-shapes, env lookups, string literals, sql/route hints, throw/raise
     Emits ("effect", EffectRow).
     """
     cfg = cfg or EffectsConfig()
-    fm = ps.file
-    info: Optional[DriverInfo] = ps.driver
 
-    if not ps.ok or ps.events is None:
-        sink.emit(Anomaly(
-            path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
-            severity=Severity.ERROR, detail=ps.error or "parse stream missing",
-        ))
+    if not events:
         return
 
     lang = fm.lang
@@ -101,7 +95,7 @@ def build_effects(ps: ParseStream, sink: AnomalySink, cfg: Optional[EffectsConfi
     # simple per-file stats for WARNs
     stats = {"total": 0, "t0_or_t1": False}
 
-    for ev in ps.events:
+    for ev in events:
         # Maintain a token window for heuristics
         if ev.kind == CstEventKind.TOKEN:
             token_window.append(ev)

@@ -13,7 +13,6 @@ from .parser_registry import (
     CstEvent,
     CstEventKind,
     DriverInfo,
-    ParseStream,
 )
 from .provenance import (
     ProvenanceV2,
@@ -261,10 +260,8 @@ class Normalizer:
 
     # ---- public ---------------------------------------------------------------
 
-    def normalize(self, ps: ParseStream, sink: AnomalySink) -> Iterator[tuple[str, object]]:
-        fm = ps.file
+    def normalize(self, fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink) -> Iterator[tuple[str, object]]:
         lang = fm.lang
-        info: Optional[DriverInfo] = ps.driver
 
         adapter = _ADAPTERS.get(lang, _Adapter(lang))
 
@@ -273,16 +270,8 @@ class Normalizer:
         yield ("node", file_node)
         file_id = file_node.id
 
-        if not ps.ok or ps.events is None:
-            sink.emit(
-                Anomaly(
-                    path=fm.path,
-                    blob_sha=fm.blob_sha,
-                    kind=AnomalyKind.PARSE_FAILED,
-                    severity=Severity.ERROR,
-                    detail=ps.error or "parse stream missing",
-                )
-            )
+        # Events are provided by orchestrator; if empty, nothing to do beyond file node
+        if not events:
             return
 
         # Initialize stacks
@@ -296,7 +285,7 @@ class Normalizer:
 
         module_emitted = False
 
-        for ev in ps.events:
+        for ev in events:
             # Validate event quickly
             if not self._validate_event(ev, fm, sink):
                 continue
@@ -1261,6 +1250,6 @@ def _is_export_like(adapter: _Adapter, t: str) -> bool:
 # Convenience function
 # ==============================================================================
 
-def normalize_parse_stream(ps: ParseStream, sink: AnomalySink, cfg: Optional[NormalizerConfig] = None) -> Iterator[tuple[str, object]]:
+def normalize_parse_stream(fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink, cfg: Optional[NormalizerConfig] = None) -> Iterator[tuple[str, object]]:
     norm = Normalizer(cfg)
-    yield from norm.normalize(ps, sink)
+    yield from norm.normalize(fm, info, events, sink)

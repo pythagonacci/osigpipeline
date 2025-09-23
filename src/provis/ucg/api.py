@@ -204,7 +204,7 @@ def build_ucg_for_files(
             ))
             continue
 
-        # Parse
+        # Parse ONCE and materialize events for multi-analysis reuse
         ps, perr = _parse_file(fm)
         if ps is None:
             sink.emit(Anomaly(
@@ -215,23 +215,21 @@ def build_ucg_for_files(
 
         files_parsed += 1
 
-        # Ensure parse events are reusable across phases
+        # Materialize the parse stream events into a reusable list
+        driver_info = getattr(ps, "driver", None)
         try:
-            if ps.events is not None and not isinstance(ps.events, list):
-                ps = type(ps)(file=ps.file, info=ps.driver, error=ps.error, events=list(ps.events), ok=ps.ok)  # type: ignore
+            event_list = list(ps.events) if ps.events is not None else []
         except Exception:
-            # Fallback: best-effort materialization
-            try:
-                evs = list(ps.events) if ps.events is not None else None
-                ps.events = evs  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            event_list = []
+        # Empty files produce no events; skip further analysis
+        if not event_list:
+            continue
 
         # Normalize → Nodes/Edges
         edge_emitted_for_file = False
         emitted_node_ids: set[str] = set()
         try:
-            for item in normalize_parse_stream(ps, sink):
+            for item in normalize_parse_stream(fm, driver_info, event_list, sink):
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "edge":
                     edge_emitted_for_file = True
                     # Synthesize missing caller/decl nodes if not seen yet
@@ -284,103 +282,68 @@ def build_ucg_for_files(
                 severity=Severity.ERROR, detail=f"normalize-exception:{type(e).__name__}:{e}",
             ))
 
-        # Fallback: if no structural edges were observed from normalization (environment quirks),
-        # re-parse and emit only edges to ensure edges channel is populated.
+        # Fallback: if no structural edges were observed from normalization, re-run normalizer over the same events
+        # and emit only edges to ensure edges channel is populated.
         if not edge_emitted_for_file:
             try:
-                ps_edges, perr_edges = _parse_file(fm)
-                if ps_edges is not None:
-                    for kind, row in normalize_parse_stream(ps_edges, sink):
-                        if kind == "edge":
-                            node_edge_buf.append((kind, row))
-                            edge_emitted_for_file = True
-                            if len(node_edge_buf) >= cfg.node_edge_batch:
-                                flush_buffers()
-                else:
-                    sink.emit(Anomaly(
-                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
-                        severity=Severity.ERROR, detail=f"{perr_edges} (edges-fallback) path={fm.path} lang={fm.lang}",
-                    ))
+                for kind, row in normalize_parse_stream(fm, driver_info, event_list, sink):
+                    if kind == "edge":
+                        node_edge_buf.append((kind, row))
+                        edge_emitted_for_file = True
+                        if len(node_edge_buf) >= cfg.node_edge_batch:
+                            flush_buffers()
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
                     severity=Severity.ERROR, detail=f"edges-fallback-exception:{type(e).__name__}:{e}",
                 ))
 
-        # CFG (optional) — re-parse for fresh events
+        # CFG (optional) — reuse materialized events
         if cfg.enable_cfg and 'build_cfg' in globals():
             try:
-                ps_cfg, perr_cfg = _parse_file(fm)
-                if ps_cfg is not None:
-                    for item in build_cfg(ps_cfg, sink):
-                        cfg_buf.append(item)
-                        if len(cfg_buf) >= cfg.cfg_batch:
-                            flush_buffers()
-                else:
-                    sink.emit(Anomaly(
-                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
-                        severity=Severity.ERROR, detail=f"{perr_cfg} (cfg) path={fm.path} lang={fm.lang}",
-                    ))
+                for item in build_cfg(fm, driver_info, event_list, sink):
+                    cfg_buf.append(item)
+                    if len(cfg_buf) >= cfg.cfg_batch:
+                        flush_buffers()
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
                     severity=Severity.ERROR, detail=f"cfg-exception:{type(e).__name__}:{e}",
                 ))
 
-        # DFG (optional) — re-parse for fresh events
+        # DFG (optional) — reuse materialized events
         if cfg.enable_dfg and 'build_dfg' in globals():
             try:
-                ps_dfg, perr_dfg = _parse_file(fm)
-                if ps_dfg is not None:
-                    for item in build_dfg(ps_dfg, sink):
-                        dfg_buf.append(item)
-                        if len(dfg_buf) >= cfg.dfg_batch:
-                            flush_buffers()
-                else:
-                    sink.emit(Anomaly(
-                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
-                        severity=Severity.ERROR, detail=f"{perr_dfg} (dfg) path={fm.path} lang={fm.lang}",
-                    ))
+                for item in build_dfg(fm, driver_info, event_list, sink):
+                    dfg_buf.append(item)
+                    if len(dfg_buf) >= cfg.dfg_batch:
+                        flush_buffers()
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
                     severity=Severity.ERROR, detail=f"dfg-exception:{type(e).__name__}:{e}",
                 ))
 
-        # Symbols/Aliases (optional) — re-parse for fresh events
+        # Symbols/Aliases (optional) — reuse materialized events
         if cfg.enable_symbols and build_symbols is not None:
             try:
-                ps_sym, perr_sym = _parse_file(fm)
-                if ps_sym is not None:
-                    for item in build_symbols(ps_sym, sink):  # yields ('symbol', SymbolRow) | ('alias', AliasRow)
-                        sym_buf.append(item)
-                        if len(sym_buf) >= cfg.sym_batch:
-                            flush_buffers()
-                else:
-                    sink.emit(Anomaly(
-                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
-                        severity=Severity.ERROR, detail=f"{perr_sym} (symbols) path={fm.path} lang={fm.lang}",
-                    ))
+                for item in build_symbols(fm, driver_info, event_list, sink):  # yields ('symbol', SymbolRow) | ('alias', AliasRow)
+                    sym_buf.append(item)
+                    if len(sym_buf) >= cfg.sym_batch:
+                        flush_buffers()
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,
                     severity=Severity.ERROR, detail=f"symbols-exception:{type(e).__name__}:{e}",
                 ))
 
-        # Effects (neutral carriers) — re-parse for fresh events
+        # Effects (neutral carriers) — reuse materialized events
         if cfg.enable_effects and 'build_effects' in globals():
             try:
-                ps_eff, perr_eff = _parse_file(fm)
-                if ps_eff is not None:
-                    for item in build_effects(ps_eff, sink):
-                        eff_buf.append(item)
-                        if len(eff_buf) >= cfg.eff_batch:
-                            flush_buffers()
-                else:
-                    sink.emit(Anomaly(
-                        path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED,
-                        severity=Severity.ERROR, detail=f"{perr_eff} (effects) path={fm.path} lang={fm.lang}",
-                    ))
+                for item in build_effects(fm, driver_info, event_list, sink):
+                    eff_buf.append(item)
+                    if len(eff_buf) >= cfg.eff_batch:
+                        flush_buffers()
             except Exception as e:
                 sink.emit(Anomaly(
                     path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.UNKNOWN,

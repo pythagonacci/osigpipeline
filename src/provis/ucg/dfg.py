@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from .discovery import Anomaly, AnomalyKind, AnomalySink, FileMeta, Language, Severity
-from .parser_registry import CstEvent, CstEventKind, DriverInfo, ParseStream
+from .parser_registry import CstEvent, CstEventKind, DriverInfo
 from .provenance import ProvenanceV2, build_provenance_from_event
 
 
@@ -165,16 +165,9 @@ class DfgBuilder:
     def __init__(self, cfg: Optional[DfgConfig] = None) -> None:
         self.cfg = cfg or DfgConfig()
 
-    def build(self, ps: ParseStream, sink: AnomalySink) -> Iterator[Tuple[str, object]]:
-        fm = ps.file
-        info: Optional[DriverInfo] = ps.driver
+    def build(self, fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink) -> Iterator[Tuple[str, object]]:
         adapter = _Adapter(fm.lang)
-
-        if not ps.ok or ps.events is None:
-            sink.emit(Anomaly(
-                path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.PARSE_FAILED, severity=Severity.ERROR,
-                detail=ps.error or "parse stream missing",
-            ))
+        if not events:
             return
 
         func_stack: List[_FuncState] = []
@@ -262,7 +255,7 @@ class DfgBuilder:
             yield ("dfg_edge", row)
 
         # walk events
-        for ev in ps.events:
+        for ev in events:
             if ev.kind == CstEventKind.ENTER and adapter.is_function(ev.type):
                 # open function
                 func_id = _stable_id(self.cfg.id_salt, "func", fm.path, fm.blob_sha, str(ev.byte_start))
@@ -406,6 +399,6 @@ class DfgBuilder:
 # Public convenience
 # ==============================================================================
 
-def build_dfg(ps: ParseStream, sink: AnomalySink, cfg: Optional[DfgConfig] = None) -> Iterator[Tuple[str, object]]:
+def build_dfg(fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink, cfg: Optional[DfgConfig] = None) -> Iterator[Tuple[str, object]]:
     builder = DfgBuilder(cfg)
-    yield from builder.build(ps, sink)
+    yield from builder.build(fm, info, events, sink)
