@@ -20,9 +20,20 @@ def _normalize_enricher_versions(
     info: Optional[DriverInfo],
 ) -> Dict[str, str]:
     versions: Dict[str, str] = {}
-    if info is not None and info.version:
-        key = info.grammar_name or info.language.value
-        versions[key] = str(info.version)
+    if info is not None:
+        # Always include a canonical 'parser' entry
+        parser_val = None
+        if info.grammar_name and info.version:
+            parser_val = f"{info.grammar_name}@{info.version}"
+        elif info.grammar_name:
+            parser_val = str(info.grammar_name)
+        elif info.version:
+            parser_val = str(info.version)
+        if parser_val:
+            versions["parser"] = parser_val
+        # Also expose raw grammar_name as a key for convenience if available
+        if info.grammar_name and info.version:
+            versions[info.grammar_name] = str(info.version)
     if base:
         for k, v in base.items():
             if not k:
@@ -42,7 +53,8 @@ def _normalize_confidence(conf: Optional[Mapping[str, ConfidenceValue]]) -> Dict
             else:
                 normalized[k] = str(v)
     if not normalized:
-        normalized.update(_default_confidence())
+        # Baseline defaults on structural rows
+        normalized.update({"span": 1.0, "structure": 1.0})
     return normalized
 
 
