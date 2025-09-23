@@ -18,8 +18,6 @@ CREATE TABLE dfg_edges_v2 AS SELECT * FROM read_parquet('dfg_edges_v2/*.parquet'
 CREATE TABLE symbols_v2 AS SELECT * FROM read_parquet('symbols_v2/*.parquet');
 CREATE TABLE aliases_v2 AS SELECT * FROM read_parquet('aliases_v2/*.parquet');
 CREATE TABLE effects_v2 AS SELECT * FROM read_parquet('effects_v2/*.parquet');
-CREATE TABLE scopes_v2 AS SELECT * FROM read_parquet('scopes_v2/*.parquet');
-CREATE TABLE symbols_scopes_v2 AS SELECT * FROM read_parquet('symbols_scopes_v2/*.parquet');
 
 -- Suggested indexes
 CREATE INDEX idx_nodes_kind ON nodes(kind);
@@ -60,7 +58,3 @@ CREATE INDEX idx_aliases_v2_tgt ON aliases_v2(target_symbol_id);
 CREATE INDEX idx_effects_v2_kind ON effects_v2(kind);
 CREATE INDEX idx_effects_v2_carr ON effects_v2(carrier);
 CREATE INDEX idx_effects_v2_path ON effects_v2(path);
-CREATE INDEX idx_scopes_v2_kind ON scopes_v2(kind);
-CREATE INDEX idx_scopes_v2_path ON scopes_v2(path);
-CREATE INDEX idx_symbols_scopes_v2_scope ON symbols_scopes_v2(scope_id);
-CREATE INDEX idx_symbols_scopes_v2_symbol ON symbols_scopes_v2(symbol_id);

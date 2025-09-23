@@ -7,7 +7,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 2
+      "row_count": 281
     },
     "edges": {
       "path": "edges/*.parquet",
@@ -16,13 +16,13 @@
         "lang",
         "kind"
       ],
-      "row_count": 41
+      "row_count": 12454
     },
     "anomalies": {
       "path": "anomalies/*.parquet",
       "schema": "path: string\nblob_sha: string\nkind: string\nseverity: string\ndetail: string\nspan_start: int64\nspan_end: int64\nts_ms: int64\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
       "partitions": [],
-      "row_count": 5
+      "row_count": 28482
     },
     "cfg_blocks": {
       "path": "cfg_blocks/*.parquet",
@@ -31,7 +31,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 50
+      "row_count": 12311
     },
     "cfg_edges": {
       "path": "cfg_edges/*.parquet",
@@ -40,7 +40,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 46
+      "row_count": 12269
     },
     "dfg_nodes": {
       "path": "dfg_nodes/*.parquet",
@@ -49,7 +49,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 159
+      "row_count": 40601
     },
     "dfg_edges": {
       "path": "dfg_edges/*.parquet",
@@ -58,7 +58,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 122
+      "row_count": 33979
     },
     "symbols": {
       "path": "symbols/*.parquet",
@@ -67,7 +67,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 148
+      "row_count": 26659
     },
     "aliases": {
       "path": "aliases/*.parquet",
@@ -75,7 +75,7 @@
       "partitions": [
         "alias_kind"
       ],
-      "row_count": 14
+      "row_count": 805
     },
     "effects": {
       "path": "effects/*.parquet",
@@ -84,7 +84,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 8
+      "row_count": 11659
     }
   }
 }

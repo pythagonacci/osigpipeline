@@ -7,7 +7,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 2
+      "row_count": 281
     },
     "edges": {
       "path": "edges/*.parquet",
@@ -16,13 +16,13 @@
         "lang",
         "kind"
       ],
-      "row_count": 41
+      "row_count": 12454
     },
     "anomalies": {
       "path": "anomalies/*.parquet",
       "schema": "path: string\nblob_sha: string\nkind: string\nseverity: string\ndetail: string\nspan_start: int64\nspan_end: int64\nts_ms: int64\nschema_version: string\n-- schema metadata --\nversion: '1.0'",
       "partitions": [],
-      "row_count": 5
+      "row_count": 28482
     },
     "cfg_blocks": {
       "path": "cfg_blocks/*.parquet",
@@ -31,7 +31,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 50
+      "row_count": 12311
     },
     "cfg_edges": {
       "path": "cfg_edges/*.parquet",
@@ -40,7 +40,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 46
+      "row_count": 12269
     },
     "dfg_nodes": {
       "path": "dfg_nodes/*.parquet",
@@ -49,7 +49,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 159
+      "row_count": 40601
     },
     "dfg_edges": {
       "path": "dfg_edges/*.parquet",
@@ -58,7 +58,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 122
+      "row_count": 33979
     },
     "symbols": {
       "path": "symbols/*.parquet",
@@ -67,7 +67,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 148
+      "row_count": 26659
     },
     "aliases": {
       "path": "aliases/*.parquet",
@@ -75,7 +75,7 @@
       "partitions": [
         "alias_kind"
       ],
-      "row_count": 14
+      "row_count": 805
     },
     "effects": {
       "path": "effects/*.parquet",
@@ -84,7 +84,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 8
+      "row_count": 11659
     },
     "nodes_v2": {
       "path": "nodes_v2/*.parquet",
@@ -93,7 +93,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 2
+      "row_count": 281
     },
     "edges_v2": {
       "path": "edges_v2/*.parquet",
@@ -102,7 +102,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 41
+      "row_count": 12454
     },
     "cfg_blocks_v2": {
       "path": "cfg_blocks_v2/*.parquet",
@@ -111,7 +111,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 50
+      "row_count": 12311
     },
     "cfg_edges_v2": {
       "path": "cfg_edges_v2/*.parquet",
@@ -120,7 +120,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 46
+      "row_count": 12269
     },
     "dfg_nodes_v2": {
       "path": "dfg_nodes_v2/*.parquet",
@@ -129,7 +129,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 159
+      "row_count": 40601
     },
     "dfg_edges_v2": {
       "path": "dfg_edges_v2/*.parquet",
@@ -138,7 +138,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 122
+      "row_count": 33979
     },
     "symbols_v2": {
       "path": "symbols_v2/*.parquet",
@@ -147,15 +147,15 @@
         "lang",
         "kind"
       ],
-      "row_count": 148
+      "row_count": 26659
     },
     "aliases_v2": {
       "path": "aliases_v2/*.parquet",
-      "schema": "id: string\nalias_kind: string\nalias_id: string\ntarget_symbol_id: string\nalias_root_id: string\nalias_name: string\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nprov_enricher_versions: map<string, string>\n  child 0, entries: struct<key: string not null, value: string> not null\n      child 0, key: string not null\n      child 1, value: string\nprov_confidence: map<string, struct<string_value: string, double_value: double>>\n  child 0, entries: struct<key: string not null, value: struct<string_value: string, double_value: double>> not null\n      child 0, key: string not null\n      child 1, value: struct<string_value: string, double_value: double>\n          child 0, string_value: string\n          child 1, double_value: double\nschema_version: string\n-- schema metadata --\nversion: '2.0'",
+      "schema": "id: string\nalias_kind: string\nalias_id: string\ntarget_symbol_id: string\nalias_name: string\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nprov_enricher_versions: map<string, string>\n  child 0, entries: struct<key: string not null, value: string> not null\n      child 0, key: string not null\n      child 1, value: string\nprov_confidence: map<string, struct<string_value: string, double_value: double>>\n  child 0, entries: struct<key: string not null, value: struct<string_value: string, double_value: double>> not null\n      child 0, key: string not null\n      child 1, value: struct<string_value: string, double_value: double>\n          child 0, string_value: string\n          child 1, double_value: double\nschema_version: string\n-- schema metadata --\nversion: '2.0'",
       "partitions": [
         "alias_kind"
       ],
-      "row_count": 14
+      "row_count": 805
     },
     "effects_v2": {
       "path": "effects_v2/*.parquet",
@@ -164,24 +164,7 @@
         "lang",
         "kind"
       ],
-      "row_count": 8
-    },
-    "scopes_v2": {
-      "path": "scopes_v2/*.parquet",
-      "schema": "id: string\nparent_scope_id: string\nkind: string\npath: string\nlang: string\nattrs_json: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nprov_enricher_versions: map<string, string>\n  child 0, entries: struct<key: string not null, value: string> not null\n      child 0, key: string not null\n      child 1, value: string\nprov_confidence: map<string, struct<string_value: string, double_value: double>>\n  child 0, entries: struct<key: string not null, value: struct<string_value: string, double_value: double>> not null\n      child 0, key: string not null\n      child 1, value: struct<string_value: string, double_value: double>\n          child 0, string_value: string\n          child 1, double_value: double\nschema_version: string\n-- schema metadata --\nversion: '2.0'",
-      "partitions": [
-        "lang",
-        "kind"
-      ],
-      "row_count": 0
-    },
-    "symbols_scopes_v2": {
-      "path": "symbols_scopes_v2/*.parquet",
-      "schema": "scope_id: string\nsymbol_id: string\nbinding_name: string\nvisibility: string\nis_exported: bool\ndynamic_flags_json: string\npath: string\nlang: string\nprov_path: string\nprov_blob_sha: string\nprov_lang: string\nprov_grammar_sha: string\nprov_run_id: string\nprov_config_hash: string\nprov_byte_start: int64\nprov_byte_end: int64\nprov_line_start: int32\nprov_line_end: int32\nprov_enricher_versions: map<string, string>\n  child 0, entries: struct<key: string not null, value: string> not null\n      child 0, key: string not null\n      child 1, value: string\nprov_confidence: map<string, struct<string_value: string, double_value: double>>\n  child 0, entries: struct<key: string not null, value: struct<string_value: string, double_value: double>> not null\n      child 0, key: string not null\n      child 1, value: struct<string_value: string, double_value: double>\n          child 0, string_value: string\n          child 1, double_value: double\nschema_version: string\n-- schema metadata --\nversion: '2.0'",
-      "partitions": [
-        "lang"
-      ],
-      "row_count": 148
+      "row_count": 11659
     }
   }
 }

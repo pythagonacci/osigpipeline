@@ -12,7 +12,8 @@ ConfidenceValue = Union[str, float, int]
 
 
 def _default_confidence() -> Dict[str, ConfidenceValue]:
-    return {"structure": "high"}
+    # Baseline keys always present
+    return {"span": 1.0, "structure": 1.0}
 
 
 def _normalize_enricher_versions(
@@ -43,7 +44,8 @@ def _normalize_enricher_versions(
 
 
 def _normalize_confidence(conf: Optional[Mapping[str, ConfidenceValue]]) -> Dict[str, ConfidenceValue]:
-    normalized: Dict[str, ConfidenceValue] = {}
+    # Always include baseline keys span/structure, then overlay provided values
+    normalized: Dict[str, ConfidenceValue] = {"span": 1.0, "structure": 1.0}
     if conf:
         for k, v in conf.items():
             if not k or v is None:
@@ -52,9 +54,6 @@ def _normalize_confidence(conf: Optional[Mapping[str, ConfidenceValue]]) -> Dict
                 normalized[k] = float(v)
             else:
                 normalized[k] = str(v)
-    if not normalized:
-        # Baseline defaults on structural rows
-        normalized.update({"span": 1.0, "structure": 1.0})
     return normalized
 
 

@@ -104,6 +104,8 @@ class UcgStore:
             (self._staging / "symbols_v2").mkdir(parents=True, exist_ok=True)
             (self._staging / "aliases_v2").mkdir(parents=True, exist_ok=True)
             (self._staging / "effects_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "scopes_v2").mkdir(parents=True, exist_ok=True)
+            (self._staging / "symbols_scopes_v2").mkdir(parents=True, exist_ok=True)
 
         # Schemas
         self._node_schema = _node_schema()
@@ -182,6 +184,16 @@ class UcgStore:
             if self._effect_schema_v2 is not None
             else None
         )
+        self._scopes_buf_v2 = (
+            _AdaptiveRowBuffer(_scope_schema_v2(), self.roll_rows, self.max_buffer_memory_mb)
+            if self._enable_prov_v2
+            else None
+        )
+        self._sym_scopes_buf_v2 = (
+            _AdaptiveRowBuffer(_symbols_scopes_schema_v2(), self.roll_rows, self.max_buffer_memory_mb)
+            if self._enable_prov_v2
+            else None
+        )
 
         # Counters/indices
         self._node_file_idx = 0
@@ -213,6 +225,8 @@ class UcgStore:
         self._symbol_file_idx_v2 = 0
         self._alias_file_idx_v2 = 0
         self._effect_file_idx_v2 = 0
+        self._scopes_file_idx_v2 = 0
+        self._sym_scopes_file_idx_v2 = 0
         self._node_rows_total_v2 = 0
         self._edge_rows_total_v2 = 0
         self._cfg_block_rows_total_v2 = 0
@@ -222,6 +236,8 @@ class UcgStore:
         self._symbol_rows_total_v2 = 0
         self._alias_rows_total_v2 = 0
         self._effect_rows_total_v2 = 0
+        self._scopes_rows_total_v2 = 0
+        self._sym_scopes_rows_total_v2 = 0
         self._bytes_written = 0
 
         # Compression
@@ -360,6 +376,21 @@ class UcgStore:
         Accept ('symbol', SymbolRow) and ('alias', AliasRow) tuples.
         """
         for kind, row in rows:
+            if kind == "scope_v2":
+                if not self._enable_prov_v2 or self._scopes_buf_v2 is None:
+                    continue
+                # row is expected to be a dict already matching _scope_schema_v2
+                self._scopes_buf_v2.add(row)
+                if self._scopes_buf_v2.should_roll():
+                    self._flush_scopes_v2()
+                continue
+            if kind == "symbol_scope_v2":
+                if not self._enable_prov_v2 or self._sym_scopes_buf_v2 is None:
+                    continue
+                self._sym_scopes_buf_v2.add(row)
+                if self._sym_scopes_buf_v2.should_roll():
+                    self._flush_symbols_scopes_v2()
+                continue
             if kind == "symbol":
                 if not isinstance(row, SymbolRow):
                     raise TypeError("symbol row must be SymbolRow")
@@ -428,6 +459,8 @@ class UcgStore:
         self._flush_effects()
         if self._enable_prov_v2:
             self._flush_effects_v2()
+            self._flush_scopes_v2()
+            self._flush_symbols_scopes_v2()
 
     def finalize(self, *, receipt: Dict) -> None:
         """
@@ -470,6 +503,8 @@ class UcgStore:
             meta["v2"] = {
                 "nodes_rows": self._node_rows_total_v2,
                 "edges_rows": self._edge_rows_total_v2,
+                "scopes_rows": self._scopes_rows_total_v2,
+                "symbols_scopes_rows": self._sym_scopes_rows_total_v2,
                 "cfg_block_rows": self._cfg_block_rows_total_v2,
                 "cfg_edge_rows": self._cfg_edge_rows_total_v2,
                 "dfg_node_rows": self._dfg_node_rows_total_v2,
@@ -480,6 +515,8 @@ class UcgStore:
                 "files": {
                     "nodes": self._node_file_idx_v2,
                     "edges": self._edge_file_idx_v2,
+                    "scopes": self._scopes_file_idx_v2,
+                    "symbols_scopes": self._sym_scopes_file_idx_v2,
                     "cfg_blocks": self._cfg_block_file_idx_v2,
                     "cfg_edges": self._cfg_edge_file_idx_v2,
                     "dfg_nodes": self._dfg_node_file_idx_v2,
@@ -714,6 +751,30 @@ class UcgStore:
         self._transaction_log.append(f"wrote_effects_v2:{path.name}")
         self._effect_buf_v2.clear()
 
+    def _flush_scopes_v2(self) -> None:
+        if not self._enable_prov_v2 or self._scopes_buf_v2 is None:
+            return
+        if not self._scopes_buf_v2 and self._scopes_file_idx_v2 > 0:
+            return
+        path = self._staging / "scopes_v2" / f"{self.file_prefix}_scopes_v2_{self._scopes_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._scopes_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._scopes_rows_total_v2 += rows_written
+        self._scopes_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_scopes_v2:{path.name}")
+        self._scopes_buf_v2.clear()
+
+    def _flush_symbols_scopes_v2(self) -> None:
+        if not self._enable_prov_v2 or self._sym_scopes_buf_v2 is None:
+            return
+        if not self._sym_scopes_buf_v2 and self._sym_scopes_file_idx_v2 > 0:
+            return
+        path = self._staging / "symbols_scopes_v2" / f"{self.file_prefix}_symbols_scopes_v2_{self._sym_scopes_file_idx_v2:05}.parquet"
+        rows_written = self._verified_write(self._sym_scopes_buf_v2, path, schema_version=SCHEMA_VERSION_V2)
+        self._sym_scopes_rows_total_v2 += rows_written
+        self._sym_scopes_file_idx_v2 += 1
+        self._transaction_log.append(f"wrote_symbols_scopes_v2:{path.name}")
+        self._sym_scopes_buf_v2.clear()
+
     # ----------------------------- internals: write helpers --------------------
 
     def _verified_write(
@@ -903,6 +964,18 @@ class UcgStore:
                         "partitions": ["lang", "kind"],
                         "row_count": self._effect_rows_total_v2,
                     },
+                    "scopes_v2": {
+                        "path": "scopes_v2/*.parquet",
+                        "schema": str(_scope_schema_v2()),
+                        "partitions": ["lang", "kind"],
+                        "row_count": self._scopes_rows_total_v2,
+                    },
+                    "symbols_scopes_v2": {
+                        "path": "symbols_scopes_v2/*.parquet",
+                        "schema": str(_symbols_scopes_schema_v2()),
+                        "partitions": ["lang"],
+                        "row_count": self._sym_scopes_rows_total_v2,
+                    },
                 }
             )
         catalog = {"tables": catalog_tables}
@@ -933,6 +1006,8 @@ class UcgStore:
                     "CREATE TABLE symbols_v2 AS SELECT * FROM read_parquet('symbols_v2/*.parquet');",
                     "CREATE TABLE aliases_v2 AS SELECT * FROM read_parquet('aliases_v2/*.parquet');",
                     "CREATE TABLE effects_v2 AS SELECT * FROM read_parquet('effects_v2/*.parquet');",
+                    "CREATE TABLE scopes_v2 AS SELECT * FROM read_parquet('scopes_v2/*.parquet');",
+                    "CREATE TABLE symbols_scopes_v2 AS SELECT * FROM read_parquet('symbols_scopes_v2/*.parquet');",
                 ]
             )
         duckdb_sql += [
@@ -980,6 +1055,10 @@ class UcgStore:
                     "CREATE INDEX idx_effects_v2_kind ON effects_v2(kind);",
                     "CREATE INDEX idx_effects_v2_carr ON effects_v2(carrier);",
                     "CREATE INDEX idx_effects_v2_path ON effects_v2(path);",
+                    "CREATE INDEX idx_scopes_v2_kind ON scopes_v2(kind);",
+                    "CREATE INDEX idx_scopes_v2_path ON scopes_v2(path);",
+                    "CREATE INDEX idx_symbols_scopes_v2_scope ON symbols_scopes_v2(scope_id);",
+                    "CREATE INDEX idx_symbols_scopes_v2_symbol ON symbols_scopes_v2(symbol_id);",
                 ]
             )
         (self._staging / "schema.sql").write_text("\n".join(duckdb_sql), encoding="utf-8")
@@ -1411,6 +1490,7 @@ def _alias_schema_v2() -> pa.schema:
         pa.field("alias_kind", pa.string()),
         pa.field("alias_id", pa.string()),
         pa.field("target_symbol_id", pa.string()),
+        pa.field("alias_root_id", pa.string()),
         pa.field("alias_name", pa.string()),
         pa.field("path", pa.string()),
         pa.field("lang", pa.string()),
@@ -1465,6 +1545,58 @@ def _effect_schema_v2() -> pa.schema:
         pa.field("path", pa.string()),
         pa.field("lang", pa.string()),
         pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+        pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
+
+
+def _scope_schema_v2() -> pa.schema:
+    schema = pa.schema([
+        pa.field("id", pa.string()),
+        pa.field("parent_scope_id", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
+        pa.field("attrs_json", pa.string()),
+        pa.field("prov_path", pa.string()),
+        pa.field("prov_blob_sha", pa.string()),
+        pa.field("prov_lang", pa.string()),
+        pa.field("prov_grammar_sha", pa.string()),
+        pa.field("prov_run_id", pa.string()),
+        pa.field("prov_config_hash", pa.string()),
+        pa.field("prov_byte_start", pa.int64()),
+        pa.field("prov_byte_end", pa.int64()),
+        pa.field("prov_line_start", pa.int32()),
+        pa.field("prov_line_end", pa.int32()),
+        pa.field("prov_enricher_versions", _PROV_ENRICHER_TYPE),
+        pa.field("prov_confidence", _PROV_CONFIDENCE_TYPE),
+        pa.field("schema_version", pa.string()),
+    ])
+    return schema.with_metadata({"version": SCHEMA_VERSION_V2})
+
+
+def _symbols_scopes_schema_v2() -> pa.schema:
+    schema = pa.schema([
+        pa.field("scope_id", pa.string()),
+        pa.field("symbol_id", pa.string()),
+        pa.field("binding_name", pa.string()),
+        pa.field("visibility", pa.string()),
+        pa.field("is_exported", pa.bool_()),
+        pa.field("dynamic_flags_json", pa.string()),
+        pa.field("path", pa.string()),
+        pa.field("lang", pa.string()),
         pa.field("prov_path", pa.string()),
         pa.field("prov_blob_sha", pa.string()),
         pa.field("prov_lang", pa.string()),
@@ -1718,6 +1850,11 @@ def _alias_to_arrow_row(a: AliasRow) -> Dict:
 
 def _alias_to_arrow_row_v2(a: AliasRow) -> Dict:
     data = _alias_base_row(a)
+    # v2-only expansion
+    try:
+        data["alias_root_id"] = getattr(a, "alias_root_id", "")
+    except Exception:
+        data["alias_root_id"] = ""
     data.update(a.prov.v2_columns())
     data["schema_version"] = SCHEMA_VERSION_V2
     return data

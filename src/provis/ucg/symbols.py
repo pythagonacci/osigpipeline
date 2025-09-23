@@ -63,6 +63,7 @@ class AliasRow:
     alias_kind: AliasKind
     alias_id: str           # SymbolRow.id of alias binding, if we created one; else empty
     target_symbol_id: str   # SymbolRow.id if resolved; else ""
+    alias_root_id: str      # canonical root of alias chain (if resolved), else ""
     alias_name: str         # readable alias text (for unresolved)
     path: str
     lang: Language
@@ -165,6 +166,8 @@ class _BuildState:
     scope_stack: List[_Scope] = field(default_factory=list)
     # Quick index: (scope_id, name) -> symbol_id for intra-file alias resolution
     sym_index: Dict[Tuple[str, str], str] = field(default_factory=dict)
+    # Reverse map symbol_id -> root_id for union-find like alias root tracking
+    sym_root: Dict[str, str] = field(default_factory=dict)
     # Track whether we are scanning parameters for current function
     in_params: bool = False
     # Last assignment start → first identifier is a def; subsequent identifiers are uses (for aliasing)
@@ -215,6 +218,11 @@ def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfi
         )
         st.scope_stack.append(_Scope(id=mod_scope_id, kind=SymbolKind.MODULE, name=mod_sym.name, byte_start=0, parent=None))
         yield ("symbol", mod_sym)
+        # v2 per-scope binding row for module name
+        try:
+            yield ("symbol_scope_v2", _symbol_scope_v2_row(st, mod_scope_id, mod_sym.id, mod_sym.name, "public", False, False, _synthetic_ev()))
+        except Exception:
+            pass
     else:
         st.scope_stack.append(_Scope(id=mod_scope_id, kind=SymbolKind.MODULE, name=module_name, byte_start=0, parent=None))
 
@@ -228,6 +236,10 @@ def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfi
                 if srow is not None:
                     st.symbols_emitted += 1
                     yield ("symbol", srow)
+                    try:
+                        yield ("symbol_scope_v2", _symbol_scope_v2_row(st, st.scope_stack[-1].parent or "", srow.id, srow.name, srow.visibility, False, srow.is_dynamic, ev))
+                    except Exception:
+                        pass
                 continue
 
             if ad.is_function(ev.type):
@@ -240,6 +252,10 @@ def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfi
                 if srow is not None:
                     st.symbols_emitted += 1
                     yield ("symbol", srow)
+                    try:
+                        yield ("symbol_scope_v2", _symbol_scope_v2_row(st, st.scope_stack[-1].parent or "", srow.id, srow.name, srow.visibility, False, srow.is_dynamic, ev))
+                    except Exception:
+                        pass
                 st.in_params = True  # expect params tokens following for Py / identifiers in JS formal_parameters
                 continue
 
@@ -259,6 +275,10 @@ def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfi
                     st.sym_index[(st.scope_stack[-1].id, pname)] = srow.id
                     st.symbols_emitted += 1
                     yield ("symbol", srow)
+                    try:
+                        yield ("symbol_scope_v2", _symbol_scope_v2_row(st, st.scope_stack[-1].id, srow.id, srow.name, srow.visibility, False, srow.is_dynamic, ev))
+                    except Exception:
+                        pass
                 continue
 
             # Assignment LHS → variable definition symbol
@@ -273,6 +293,10 @@ def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfi
                     st.sym_index[(st.scope_stack[-1].id, vname)] = srow.id
                     st.symbols_emitted += 1
                     yield ("symbol", srow)
+                    try:
+                        yield ("symbol_scope_v2", _symbol_scope_v2_row(st, st.scope_stack[-1].id, srow.id, srow.name, srow.visibility, False, srow.is_dynamic, ev))
+                    except Exception:
+                        pass
                 # Do not consume open_assign_bytes here; EXIT of the assignment will pop it.
                 continue
 
@@ -313,6 +337,10 @@ def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfi
                     st.sym_index[(st.scope_stack[-1].id, nm)] = srow.id
                     st.symbols_emitted += 1
                     yield ("symbol", srow)
+                    try:
+                        yield ("symbol_scope_v2", _symbol_scope_v2_row(st, st.scope_stack[-1].id, srow.id, srow.name, srow.visibility, True, srow.is_dynamic, ev))
+                    except Exception:
+                        pass
                     # unresolved target → DYNAMIC alias
                     arow = _alias_row(cfg, st, AliasKind.DYNAMIC, alias_id=srow.id, target_symbol_id="",
                                       alias_name=nm, ev=ev, extra={"reason": "unresolved_import", "is_type_only": bool(is_type_only)})
@@ -330,6 +358,10 @@ def build_symbols(ps: ParseStream, sink: AnomalySink, cfg: Optional[SymbolsConfi
                                        visibility="public", is_dynamic=False, ev=ev, extra={})
                     st.symbols_emitted += 1
                     yield ("symbol", srow)
+                    try:
+                        yield ("symbol_scope_v2", _symbol_scope_v2_row(st, st.scope_stack[-1].id, srow.id, srow.name, srow.visibility, srow.is_dynamic, ev))
+                    except Exception:
+                        pass
                     # Re-export to existing symbol in this scope if present, else dynamic
                     tgt = st.sym_index.get((st.scope_stack[-1].id, ename), "")
                     kind = AliasKind.REEXPORT if tgt else AliasKind.DYNAMIC
@@ -387,6 +419,8 @@ def _symbol_row(
         attrs_json=_compact(extra or {}),
         prov=prov,
     )
+    # initialize root
+    st.sym_root[row.id] = row.id
     return row
 
 
@@ -402,13 +436,21 @@ def _alias_row(
     extra: Dict,
 ) -> AliasRow:
     fm, info = st.file, st.driver
-    prov = build_provenance_from_event(fm, info, ev)
+    root_conf = 0.95 if target_symbol_id else 0.5
+    prov = build_provenance_from_event(
+        fm, info, ev,
+        confidence={"root": root_conf}
+    )
     aid = _stable_id(cfg.id_salt, "alias", fm.path, fm.blob_sha or "", alias_kind.value, alias_id, target_symbol_id, alias_name, str(ev.byte_start))
+    # union alias chains when target is known
+    if target_symbol_id and alias_id:
+        _union_alias(st, alias_id, target_symbol_id)
     return AliasRow(
         id=aid,
         alias_kind=alias_kind,
         alias_id=alias_id,
         target_symbol_id=target_symbol_id,
+        alias_root_id=_alias_root_id(st, target_symbol_id) if target_symbol_id else "",
         alias_name=alias_name[:256],
         path=fm.path,
         lang=fm.lang,
@@ -422,6 +464,62 @@ def _visibility_from_name(name: str) -> str:
     if name.startswith("_"):
         return "private"
     return "public"
+
+
+def _symbol_scope_v2_row(
+    st: _BuildState,
+    scope_id: str,
+    symbol_id: str,
+    binding_name: str,
+    visibility: str,
+    is_exported: bool,
+    is_dynamic: bool,
+    ev: CstEvent,
+) -> Dict:
+    fm, info = st.file, st.driver
+    binding_conf = 0.6 if is_dynamic else 1.0
+    prov = build_provenance_from_event(
+        fm, info, ev,
+        confidence={"binding": binding_conf}
+    )
+    dynamic_flags: Dict[str, object] = {}
+    return {
+        "scope_id": scope_id,
+        "symbol_id": symbol_id,
+        "binding_name": binding_name,
+        "visibility": visibility,
+        "is_exported": bool(is_exported),
+        "dynamic_flags_json": _compact(dynamic_flags),
+        "path": fm.path,
+        "lang": getattr(fm.lang, "value", str(fm.lang)),
+        **prov.base_columns(),
+        **prov.v2_columns(),
+    }
+
+
+def _find_root(st: _BuildState, sid: str) -> str:
+    # path compression
+    parent = st.sym_root.get(sid, sid)
+    if parent != sid:
+        parent = _find_root(st, parent)
+        st.sym_root[sid] = parent
+    return parent
+
+
+def _union_alias(st: _BuildState, a_id: str, b_id: str) -> None:
+    ra = _find_root(st, a_id)
+    rb = _find_root(st, b_id)
+    if ra != rb:
+        # simple attach by lexicographic stability
+        root = min(ra, rb)
+        other = rb if root == ra else ra
+        st.sym_root[other] = root
+
+
+def _alias_root_id(st: _BuildState, sid: str) -> str:
+    if not sid:
+        return ""
+    return _find_root(st, sid)
 
 
 def _extract_name_token(st: _BuildState, ev: CstEvent) -> Optional[str]:

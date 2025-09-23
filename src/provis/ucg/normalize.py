@@ -225,6 +225,17 @@ class _Scope:
     params: List[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ScopeRow:
+    id: str  # use scope.node_id for stability
+    parent_scope_id: Optional[str]
+    kind: NodeKind
+    path: str
+    lang: Language
+    attrs_json: str
+    prov: ProvenanceV2
+
+
 @dataclass
 class _PendingConstruct:
     kind: NodeKind
@@ -1172,6 +1183,26 @@ class Normalizer:
             extra=extra_payload,
         )
         yield ("node", nrow)
+
+        # v2: emit scopes_v2 record carrying scope lineage and params
+        try:
+            prov = nrow.prov
+            scope_extra = dict(extra_payload)
+            if scope.kind == NodeKind.FUNCTION and scope.params:
+                scope_extra["param_index_to_name"] = {str(i): p for i, p in enumerate(scope.params)}
+            scope_v2 = {
+                "id": scope.node_id,
+                "parent_scope_id": scope.parent_id or file_id,
+                "kind": scope.kind.value,
+                "path": fm.path,
+                "lang": getattr(fm.lang, "value", str(fm.lang)),
+                "attrs_json": _compact(scope_extra),
+                **prov.base_columns(),
+                **prov.v2_columns(),
+            }
+            yield ("scope_v2", scope_v2)
+        except Exception:
+            pass
 
         parent_id = scope.parent_id or file_id
         erow = self._edge_row(

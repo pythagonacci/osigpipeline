@@ -10,7 +10,7 @@
   "symbol_rows": 148,
   "alias_rows": 14,
   "effect_rows": 8,
-  "bytes_written": 213599,
+  "bytes_written": 213471,
   "compression": {
     "algorithm": "zstd",
     "level": 7
@@ -27,8 +27,8 @@
     "aliases": 1,
     "effects": 1
   },
-  "created_at_epoch": 1758637015,
-  "created_at_iso": "2025-09-23T14:16:55Z",
+  "created_at_epoch": 1758636868,
+  "created_at_iso": "2025-09-23T14:14:28Z",
   "transaction_log": [
     "wrote_nodes:ucg_nodes_00000.parquet",
     "wrote_nodes_v2:ucg_nodes_v2_00000.parquet",
@@ -80,7 +80,7 @@
     "schema_version": "2.0"
   },
   "run_meta": {
-    "repo_path": "test_repo",
+    "repo_path": "/Users/amnaahmad/osigfin/osigpipeline/test_repo",
     "test_run": true
   },
   "step": "step1_ucg",
@@ -93,10 +93,10 @@
     "nodes/ucg_nodes_00000.parquet": "7cb5075b3b33fc9121ec063083564e7a",
     "edges_v2/ucg_edges_v2_00000.parquet": "e3fd4976c624de9136bb010085ea7c47",
     "cfg_blocks_v2/ucg_cfg_blocks_v2_00000.parquet": "48d6e04f6ab93b66c2d83227af6e5b96",
-    "anomalies/ucg_anomalies_00000.parquet": "b4e95fd64955cc5b7e83cd7cdf3fa0f9",
+    "anomalies/ucg_anomalies_00000.parquet": "e7be62fb7abcf7c6bf13b30b158e5ece",
     "cfg_edges_v2/ucg_cfg_edges_v2_00000.parquet": "e9fc2c594f6cef62fe94d18c84b1366a",
-    "symbols_scopes_v2/ucg_symbols_scopes_v2_00000.parquet": "ce51beaa744a8c51a3e49321ae8cf4bd",
-    "aliases_v2/ucg_aliases_v2_00000.parquet": "8f252a1b10379ee07cfee435b023144d",
+    "symbols_scopes_v2/ucg_symbols_scopes_v2_00000.parquet": "ac90aa253f9d410d9c7cd1a8d93df7d9",
+    "aliases_v2/ucg_aliases_v2_00000.parquet": "c17e7098a078991d9f0515573b82be76",
     "cfg_edges/ucg_cfg_edges_00000.parquet": "d9ad8b43883b30b5b8c6bc763800959b",
     "symbols_v2/ucg_symbols_v2_00000.parquet": "379b1603d8fbe45bd74f220332cd13ce",
     "symbols/ucg_symbols_00000.parquet": "7aacca975c382cc204f64231a40be069",

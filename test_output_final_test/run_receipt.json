@@ -1,16 +1,16 @@
 {
   "schema_version": "1.0",
-  "nodes_rows": 43,
+  "nodes_rows": 2,
   "edges_rows": 41,
-  "anomaly_rows": 0,
-  "cfg_block_rows": 0,
-  "cfg_edge_rows": 0,
-  "dfg_node_rows": 0,
-  "dfg_edge_rows": 0,
-  "symbol_rows": 0,
-  "alias_rows": 0,
-  "effect_rows": 0,
-  "bytes_written": 14683,
+  "anomaly_rows": 5,
+  "cfg_block_rows": 50,
+  "cfg_edge_rows": 46,
+  "dfg_node_rows": 159,
+  "dfg_edge_rows": 122,
+  "symbol_rows": 148,
+  "alias_rows": 14,
+  "effect_rows": 8,
+  "bytes_written": 89744,
   "compression": {
     "algorithm": "zstd",
     "level": 7
@@ -18,28 +18,44 @@
   "files": {
     "nodes": 1,
     "edges": 1,
-    "anomalies": 0,
-    "cfg_blocks": 0,
-    "cfg_edges": 0,
-    "dfg_nodes": 0,
-    "dfg_edges": 0,
-    "symbols": 0,
-    "aliases": 0,
-    "effects": 0
+    "anomalies": 1,
+    "cfg_blocks": 1,
+    "cfg_edges": 1,
+    "dfg_nodes": 1,
+    "dfg_edges": 1,
+    "symbols": 1,
+    "aliases": 1,
+    "effects": 1
   },
-  "created_at_epoch": 1758503837,
-  "created_at_iso": "2025-09-22T01:17:17Z",
+  "created_at_epoch": 1758597021,
+  "created_at_iso": "2025-09-23T03:10:21Z",
   "transaction_log": [
     "wrote_nodes:ucg_nodes_00000.parquet",
-    "wrote_edges:ucg_edges_00000.parquet"
+    "wrote_edges:ucg_edges_00000.parquet",
+    "wrote_cfg_blocks:ucg_cfg_blocks_00000.parquet",
+    "wrote_cfg_edges:ucg_cfg_edges_00000.parquet",
+    "wrote_dfg_nodes:ucg_dfg_nodes_00000.parquet",
+    "wrote_dfg_edges:ucg_dfg_edges_00000.parquet",
+    "wrote_symbols:ucg_symbols_00000.parquet",
+    "wrote_aliases:ucg_aliases_00000.parquet",
+    "wrote_effects:ucg_effects_00000.parquet",
+    "wrote_anomalies:ucg_anomalies_00000.parquet"
   ],
   "run_meta": {
-    "repo_path": "test_repo",
+    "repo_path": "/Users/amnaahmad/osigfin/osigpipeline/test_repo",
     "test_run": true
   },
   "step": "step1_ucg",
   "integrity": {
-    "nodes/ucg_nodes_00000.parquet": "5afc3fd0e2cc19a8e0fd09fb83f1e22a",
-    "edges/ucg_edges_00000.parquet": "14708342ebfa1518efce326cb335c7a5"
+    "cfg_blocks/ucg_cfg_blocks_00000.parquet": "0bb4bf63cba785243b05c54851821b80",
+    "dfg_edges/ucg_dfg_edges_00000.parquet": "e9a8e44518c3f70e77fc7e0becf89827",
+    "nodes/ucg_nodes_00000.parquet": "7cb5075b3b33fc9121ec063083564e7a",
+    "anomalies/ucg_anomalies_00000.parquet": "9bb4900b753307d7638a6d6985a39859",
+    "cfg_edges/ucg_cfg_edges_00000.parquet": "d9ad8b43883b30b5b8c6bc763800959b",
+    "symbols/ucg_symbols_00000.parquet": "7aacca975c382cc204f64231a40be069",
+    "dfg_nodes/ucg_dfg_nodes_00000.parquet": "9d73ceddbfac3c786202fbfb6f09ad89",
+    "aliases/ucg_aliases_00000.parquet": "044b2599d365b14cfe863b7d3ec80762",
+    "edges/ucg_edges_00000.parquet": "57bc1fec4d9d5c3ff9f674532b3ae0b7",
+    "effects/ucg_effects_00000.parquet": "faf6b35bb323f8c894e759f238969357"
   }
 }

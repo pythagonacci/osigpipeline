@@ -10,7 +10,7 @@
   "symbol_rows": 148,
   "alias_rows": 14,
   "effect_rows": 8,
-  "bytes_written": 213599,
+  "bytes_written": 195562,
   "compression": {
     "algorithm": "zstd",
     "level": 7
@@ -27,8 +27,8 @@
     "aliases": 1,
     "effects": 1
   },
-  "created_at_epoch": 1758637015,
-  "created_at_iso": "2025-09-23T14:16:55Z",
+  "created_at_epoch": 1758597073,
+  "created_at_iso": "2025-09-23T03:11:13Z",
   "transaction_log": [
     "wrote_nodes:ucg_nodes_00000.parquet",
     "wrote_nodes_v2:ucg_nodes_v2_00000.parquet",
@@ -48,15 +48,11 @@
     "wrote_aliases_v2:ucg_aliases_v2_00000.parquet",
     "wrote_effects:ucg_effects_00000.parquet",
     "wrote_effects_v2:ucg_effects_v2_00000.parquet",
-    "wrote_scopes_v2:ucg_scopes_v2_00000.parquet",
-    "wrote_symbols_scopes_v2:ucg_symbols_scopes_v2_00000.parquet",
     "wrote_anomalies:ucg_anomalies_00000.parquet"
   ],
   "v2": {
     "nodes_rows": 2,
     "edges_rows": 41,
-    "scopes_rows": 0,
-    "symbols_scopes_rows": 136,
     "cfg_block_rows": 50,
     "cfg_edge_rows": 46,
     "dfg_node_rows": 159,
@@ -67,8 +63,6 @@
     "files": {
       "nodes": 1,
       "edges": 1,
-      "scopes": 1,
-      "symbols_scopes": 1,
       "cfg_blocks": 1,
       "cfg_edges": 1,
       "dfg_nodes": 1,
@@ -80,23 +74,21 @@
     "schema_version": "2.0"
   },
   "run_meta": {
-    "repo_path": "test_repo",
+    "repo_path": "/Users/amnaahmad/osigfin/osigpipeline/test_repo",
     "test_run": true
   },
   "step": "step1_ucg",
   "integrity": {
     "dfg_edges_v2/ucg_dfg_edges_v2_00000.parquet": "3120f7e96db46a802abe47b6893cba7b",
     "cfg_blocks/ucg_cfg_blocks_00000.parquet": "0bb4bf63cba785243b05c54851821b80",
-    "scopes_v2/ucg_scopes_v2_00000.parquet": "791b3cc2c9160bb2868c490af26927af",
     "effects_v2/ucg_effects_v2_00000.parquet": "e5efc11f6658a510abf7d3cb86d62c75",
     "dfg_edges/ucg_dfg_edges_00000.parquet": "e9a8e44518c3f70e77fc7e0becf89827",
     "nodes/ucg_nodes_00000.parquet": "7cb5075b3b33fc9121ec063083564e7a",
     "edges_v2/ucg_edges_v2_00000.parquet": "e3fd4976c624de9136bb010085ea7c47",
     "cfg_blocks_v2/ucg_cfg_blocks_v2_00000.parquet": "48d6e04f6ab93b66c2d83227af6e5b96",
-    "anomalies/ucg_anomalies_00000.parquet": "b4e95fd64955cc5b7e83cd7cdf3fa0f9",
+    "anomalies/ucg_anomalies_00000.parquet": "ca07fe852c9e01902c15565a54ecce79",
     "cfg_edges_v2/ucg_cfg_edges_v2_00000.parquet": "e9fc2c594f6cef62fe94d18c84b1366a",
-    "symbols_scopes_v2/ucg_symbols_scopes_v2_00000.parquet": "ce51beaa744a8c51a3e49321ae8cf4bd",
-    "aliases_v2/ucg_aliases_v2_00000.parquet": "8f252a1b10379ee07cfee435b023144d",
+    "aliases_v2/ucg_aliases_v2_00000.parquet": "c2f0e70876715d77f05e3e042335c916",
     "cfg_edges/ucg_cfg_edges_00000.parquet": "d9ad8b43883b30b5b8c6bc763800959b",
     "symbols_v2/ucg_symbols_v2_00000.parquet": "379b1603d8fbe45bd74f220332cd13ce",
     "symbols/ucg_symbols_00000.parquet": "7aacca975c382cc204f64231a40be069",
