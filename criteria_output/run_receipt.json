@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "nodes_rows": 34,
+  "edges_rows": 23,
+  "anomaly_rows": 0,
+  "cfg_block_rows": 0,
+  "cfg_edge_rows": 0,
+  "dfg_node_rows": 50,
+  "dfg_edge_rows": 25,
+  "symbol_rows": 95,
+  "alias_rows": 8,
+  "effect_rows": 0,
+  "bytes_written": 51446,
+  "compression": {
+    "algorithm": "zstd",
+    "level": 7
+  },
+  "files": {
+    "nodes": 1,
+    "edges": 1,
+    "anomalies": 0,
+    "cfg_blocks": 0,
+    "cfg_edges": 0,
+    "dfg_nodes": 1,
+    "dfg_edges": 1,
+    "symbols": 1,
+    "aliases": 1,
+    "effects": 0
+  },
+  "created_at_epoch": 1758741927,
+  "created_at_iso": "2025-09-24T19:25:27Z",
+  "transaction_log": [
+    "wrote_nodes:ucg_nodes_00000.parquet",
+    "wrote_edges:ucg_edges_00000.parquet",
+    "wrote_dfg_nodes:ucg_dfg_nodes_00000.parquet",
+    "wrote_dfg_edges:ucg_dfg_edges_00000.parquet",
+    "wrote_symbols:ucg_symbols_00000.parquet",
+    "wrote_aliases:ucg_aliases_00000.parquet"
+  ],
+  "run_meta": {},
+  "step": "step1_ucg",
+  "integrity": {
+    "dfg_edges/ucg_dfg_edges_00000.parquet": "a4c194d6354b0ad3f3f2ac301f8e6b99",
+    "nodes/ucg_nodes_00000.parquet": "4530240efcacb89ccb9bcc6c06753175",
+    "symbols/ucg_symbols_00000.parquet": "b455c437e7bb1c810718e69224453ffc",
+    "dfg_nodes/ucg_dfg_nodes_00000.parquet": "d9d49cf0c8cee77b1ff21a6a0a170ab6",
+    "aliases/ucg_aliases_00000.parquet": "69c465949cc74ec0be94f98a450267f4",
+    "edges/ucg_edges_00000.parquet": "20fddbc794d984ff924c2777d748e09e"
+  }
+}

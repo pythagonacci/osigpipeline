@@ -27,7 +27,7 @@ def run_step1_on_path(
     root = Path(root)
     out_dir = Path(out_dir)
     sink = AnomalySink()
-    files = list(iter_discovered_files(root, discovery or DiscoveryConfig(), sink=sink))
+    files = list(iter_discovered_files(root, discovery or DiscoveryConfig(), anomaly_sink=sink))
 
     # Step-1
     summary: Step1Summary = build_ucg_for_files(
