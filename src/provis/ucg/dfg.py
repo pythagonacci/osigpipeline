@@ -11,7 +11,6 @@ from .discovery import Anomaly, AnomalyKind, AnomalySink, FileMeta, Language, Se
 from .parser_registry import CstEvent, CstEventKind, DriverInfo
 from .provenance import ProvenanceV2, build_provenance_from_event
 
-
 # ==============================================================================
 # DFG schema (rows)
 # ==============================================================================
@@ -22,25 +21,22 @@ class DfgNodeKind(str, Enum):
     VAR_USE = "var_use"
     LITERAL = "literal"
 
-
 class DfgEdgeKind(str, Enum):
-    DEF_USE = "def_use"         # var_def -> var_use
-    CONST_PART = "const_part"   # literal -> var_def/use (string builder parts)
-    ARG_TO_PARAM = "arg_to_param"  # call arg literal/var -> callee param (intra-file seed only)
-
+    DEF_USE = "def_use"
+    CONST_PART = "const_part"
+    ARG_TO_PARAM = "arg_to_param"
 
 @dataclass(frozen=True)
 class DfgNodeRow:
     id: str
     func_id: str
     kind: DfgNodeKind
-    name: Optional[str]  # var/param name; None for literal
-    version: Optional[int]  # SSA index for VAR_DEF/VAR_USE
+    name: Optional[str]
+    version: Optional[int]
     path: str
     lang: Language
     attrs_json: str
     prov: ProvenanceV2
-
 
 @dataclass(frozen=True)
 class DfgEdgeRow:
@@ -54,24 +50,18 @@ class DfgEdgeRow:
     attrs_json: str
     prov: ProvenanceV2
 
-
 # ==============================================================================
-# Config
+# Config & State Management Classes
 # ==============================================================================
 
 @dataclass(frozen=True)
 class DfgConfig:
     id_salt: str = "dfg-v1"
-    max_defs_per_func: int = 100000   # guards for pathological files
+    max_defs_per_func: int = 100000
     max_uses_per_func: int = 200000
     capture_numeric_literals: bool = True
     capture_string_literals: bool = True
-    max_literal_span: int = 8192      # keep spans reasonable
-
-
-# ==============================================================================
-# Helpers
-# ==============================================================================
+    max_literal_span: int = 8192
 
 def _stable_id(*parts: str) -> str:
     h = hashlib.blake2b(digest_size=20)
@@ -80,325 +70,321 @@ def _stable_id(*parts: str) -> str:
         h.update(p.encode("utf-8", "ignore"))
     return h.hexdigest()
 
-
 def _compact(obj: dict) -> str:
     return json.dumps(obj, separators=(",", ":"), sort_keys=True)
 
+@dataclass
+class _VariableState:
+    name: str
+    version: int = -1 # Start at -1, first definition makes it 0
+    defining_node_id: Optional[str] = None
+
+class Scope:
+    def __init__(self, scope_id: str, parent: Optional['Scope'] = None):
+        self.scope_id = scope_id
+        self.parent = parent
+        self.variables: Dict[str, _VariableState] = {}
+
+    def find_variable(self, name: str) -> Optional[_VariableState]:
+        if name in self.variables:
+            return self.variables[name]
+        if self.parent:
+            return self.parent.find_variable(name)
+        return None
+
+    def define_variable(self, name: str, defining_node_id: str) -> _VariableState:
+        var = self.variables.get(name, _VariableState(name=name))
+        var.version += 1
+        var.defining_node_id = defining_node_id
+        self.variables[name] = var
+        return var
 
 # ==============================================================================
-# Language adapters (assignment/ident/params)
+# Language adapters
 # ==============================================================================
-
 class _Adapter:
-    """Spot assignment sites, identifier tokens, params, and string/number tokens."""
-
     def __init__(self, lang: Language) -> None:
         self.lang = lang
         self._init_sets()
 
     def _init_sets(self) -> None:
         if self.lang == Language.PY:
-            # statement/expr nodes
             self.function_nodes = {"FunctionDef", "AsyncFunctionDef", "Lambda"}
-            self.param_list_nodes = {"Parameters"}  # libcst Parameters node; we’ll also accept PARAM tokens
+            self.param_list_nodes = {"Parameters", "LambdaParameters"}
             self.assign_nodes = {"Assign", "AnnAssign", "AugAssign"}
-            self.identifier_tokens = {"Name", "Attribute"}  # conservative
-            self.string_tokens = {"SimpleString"}
-            self.number_tokens = {"Integer", "Float"}
-            self.call_nodes = {"Call"}
-            self.arg_name_tokens = {"Name"}  # simple heuristic
-            self.param_token_types = {"Name"}  # parameter names appear as Name tokens inside parameters list
+            self.assign_target_nodes = {"AssignTarget", "Name", "Attribute"}
+            self.identifier_tokens = {"Name", "Attribute"}
+            self.param_token_types = {"Name"}
             self.assignment_operators = {"=", "+=", "-=", "*=", "/=", "%=", "**=", "//=", "|=", "&=", "^=", ">>=", "<<="}
-        else:
-            # JS/TS
+        else: # JS/TS
             self.function_nodes = {"function_declaration", "function_expression", "method_definition", "arrow_function"}
             self.param_list_nodes = {"formal_parameters"}
             self.assign_nodes = {"variable_declarator", "assignment_expression"}
+            self.assign_target_nodes = {"identifier", "property_identifier", "shorthand_property_identifier", "array_pattern", "object_pattern"}
             self.identifier_tokens = {"identifier", "property_identifier", "shorthand_property_identifier", "private_property_identifier"}
-            self.string_tokens = {"string", "string_fragment", "string_literal", "template_string"}
-            self.number_tokens = {"number"}
-            self.call_nodes = {"call_expression", "new_expression"}
-            self.arg_name_tokens = {"identifier", "property_identifier"}
             self.param_token_types = {"identifier"}
             self.assignment_operators = {"=", "+=", "-=", "*=", "/=", "%=", "**=", "|=", "&=", "^=", ">>=", "<<="}
 
     def is_function(self, t: str) -> bool: return t in self.function_nodes
     def is_param_list(self, t: str) -> bool: return t in self.param_list_nodes
     def is_assign(self, t: str) -> bool: return t in self.assign_nodes
+    def is_assign_target(self, t: str) -> bool: return t in self.assign_target_nodes
     def is_identifier_token(self, t: str) -> bool: return t in self.identifier_tokens
-    def is_string_token(self, t: str) -> bool: return t in self.string_tokens
-    def is_number_token(self, t: str) -> bool: return t in self.number_tokens
-    def is_call(self, t: str) -> bool: return t in self.call_nodes
     def is_param_token(self, t: str) -> bool: return t in self.param_token_types
-    def is_assignment_operator(self, tok: str) -> bool: return tok in self.assignment_operators
-
-
-# ==============================================================================
-# Builder state
-# ==============================================================================
-
-@dataclass
-class _FuncState:
-    func_id: str
-    defs_count: int = 0
-    uses_count: int = 0
-    # current SSA versions per variable name
-    versions: Dict[str, int] = field(default_factory=dict)
-    # whether we are scanning parameter list tokens
-    in_params: bool = False
-    # last opened assignment byte_start (to attach literal parts)
-    assign_stack: List[int] = field(default_factory=list)
-    # map literal node ids emitted in this assignment to connect const_part edges
-    pending_literals: List[str] = field(default_factory=list)
-    # baseline tracking: collected param node ids and names
-    param_nodes: List[Tuple[str, str]] = field(default_factory=list)  # (name, node_id)
-    had_precision: bool = False
-
+    def is_assignment_operator(self, text: str) -> bool: return text in self.assignment_operators
 
 # ==============================================================================
 # DFG builder
 # ==============================================================================
 
 class DfgBuilder:
-    """Streaming SSA-lite local DFG over one ParseStream."""
+    """Robust, single-pass DFG builder using a stack-based CST walker to understand syntactic context."""
 
-    def __init__(self, cfg: Optional[DfgConfig] = None) -> None:
-        self.cfg = cfg or DfgConfig()
+    def __init__(self, fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink, cfg: DfgConfig):
+        self.fm = fm
+        self.info = info
+        self.events = events
+        self.sink = sink
+        self.cfg = cfg
+        self.adapter = _Adapter(fm.lang)
+        self.scope_stack: List[Scope] = []
+        self.node_stack: List[CstEvent] = []
+        self.current_assignment: Optional[dict] = None
 
-    def build(self, fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink) -> Iterator[Tuple[str, object]]:
-        adapter = _Adapter(fm.lang)
-        if not events:
+    def build(self) -> Iterator[Tuple[str, object]]:
+        if not self.events:
             return
 
-        func_stack: List[_FuncState] = []
+        root_scope_id = _stable_id(self.cfg.id_salt, "module", self.fm.path, self.fm.blob_sha or "")
+        self.scope_stack.append(Scope(root_scope_id))
 
-        def prov(ev: CstEvent) -> ProvenanceV2:
-            return build_provenance_from_event(fm, info, ev)
-
-        def node_id(kind: DfgNodeKind, func_id: str, name: Optional[str], version: Optional[int], ev: CstEvent) -> str:
-            # stable by function, name, version, and start byte
-            vpart = "" if version is None else str(version)
-            nmpart = "" if name is None else name
-            return _stable_id(self.cfg.id_salt, "node", fm.path, fm.blob_sha, func_id, kind.value, nmpart, vpart, str(ev.byte_start))
-
-        def edge_id(kind: DfgEdgeKind, func_id: str, src: str, dst: str, ev: CstEvent) -> str:
-            return _stable_id(self.cfg.id_salt, "edge", fm.path, fm.blob_sha, func_id, kind.value, src, dst, str(ev.byte_start))
-
-        def emit_param(name: str, func: _FuncState, ev: CstEvent) -> Iterator[Tuple[str, object]]:
-            # params start at version 0
-            func.versions.setdefault(name, 0)
-            nid = node_id(DfgNodeKind.PARAM, func.func_id, name, 0, ev)
-            row = DfgNodeRow(
-                id=nid, func_id=func.func_id, kind=DfgNodeKind.PARAM, name=name, version=0,
-                path=fm.path, lang=fm.lang, attrs_json=_compact({}), prov=prov(ev),
-            )
-            yield ("dfg_node", row)
-            func.param_nodes.append((name, nid))
-
-        def emit_var_def(name: str, func: _FuncState, ev: CstEvent) -> Iterator[Tuple[str, object]]:
-            v = func.versions.get(name, -1) + 1
-            func.versions[name] = v
-            func.defs_count += 1
-            nid = node_id(DfgNodeKind.VAR_DEF, func.func_id, name, v, ev)
-            row = DfgNodeRow(
-                id=nid, func_id=func.func_id, kind=DfgNodeKind.VAR_DEF, name=name, version=v,
-                path=fm.path, lang=fm.lang, attrs_json=_compact({}), prov=prov(ev),
-            )
-            yield ("dfg_node", row)
-
-        def emit_var_use(name: str, func: _FuncState, ev: CstEvent) -> Iterator[Tuple[str, object]]:
-            v = func.versions.get(name, 0)  # use current version; if unseen, assume 0
-            func.uses_count += 1
-            nid = node_id(DfgNodeKind.VAR_USE, func.func_id, name, v, ev)
-            row = DfgNodeRow(
-                id=nid, func_id=func.func_id, kind=DfgNodeKind.VAR_USE, name=name, version=v,
-                path=fm.path, lang=fm.lang, attrs_json=_compact({}), prov=prov(ev),
-            )
-            yield ("dfg_node", row)
-            # Edge from latest def (same version) to this use:
-            def_id = node_id(DfgNodeKind.VAR_DEF, func.func_id, name, v, ev)  # same key parts except start byte differs
-            # We can’t reconstruct exact def’s start byte here; use “version-only” id by dropping ev byte.
-            # Workaround: create a *logical* id by hashing without the ev.byte_start for defs and reuse here.
-            # For stability across this run, synthesize a def key:
-            def logical_def_id(nm: str, ver: int) -> str:
-                return _stable_id(self.cfg.id_salt, "node", fm.path, fm.blob_sha, func.func_id, "var_def", nm, str(ver))
-            def logical_use_id(nm: str, ver: int, b: int) -> str:
-                return _stable_id(self.cfg.id_salt, "node", fm.path, fm.blob_sha, func.func_id, "var_use", nm, str(ver), str(b))
-            src = logical_def_id(name, v)
-            dst = logical_use_id(name, v, ev.byte_start)
-            # Emit DEF_USE with logical ids in attrs so downstream can resolve by join keys
-            eid = edge_id(DfgEdgeKind.DEF_USE, func.func_id, src, dst, ev)
-            erow = DfgEdgeRow(
-                id=eid, func_id=func.func_id, kind=DfgEdgeKind.DEF_USE, src_id=src, dst_id=dst,
-                path=fm.path, lang=fm.lang, attrs_json=_compact({"name": name, "version": v, "logical": True}), prov=prov(ev),
-            )
-            yield ("dfg_edge", erow)
-
-        def emit_literal(kind: str, func: _FuncState, ev: CstEvent) -> str:
-            # literal nodes have no name/version; keep spans only
-            if ev.byte_end - ev.byte_start > self.cfg.max_literal_span:
-                return ""
-            nid = node_id(DfgNodeKind.LITERAL, func.func_id, None, None, ev)
-            row = DfgNodeRow(
-                id=nid, func_id=func.func_id, kind=DfgNodeKind.LITERAL, name=None, version=None,
-                path=fm.path, lang=fm.lang, attrs_json=_compact({"token_kind": kind}), prov=prov(ev),
-            )
-            yield ("dfg_node", row)
-            return nid  # type: ignore[return-value]
-
-        def emit_const_part(lit_id: str, target_id: str, func: _FuncState, ev: CstEvent) -> Iterator[Tuple[str, object]]:
-            eid = edge_id(DfgEdgeKind.CONST_PART, func.func_id, lit_id, target_id, ev)
-            row = DfgEdgeRow(
-                id=eid, func_id=func.func_id, kind=DfgEdgeKind.CONST_PART, src_id=lit_id, dst_id=target_id,
-                path=fm.path, lang=fm.lang, attrs_json=_compact({}), prov=prov(ev),
-            )
-            yield ("dfg_edge", row)
-
-        # walk events
-        for ev in events:
-            if ev.kind == CstEventKind.ENTER and adapter.is_function(ev.type):
-                # open function
-                func_id = _stable_id(self.cfg.id_salt, "func", fm.path, fm.blob_sha, str(ev.byte_start))
-                func_stack.append(_FuncState(func_id=func_id))
-                continue
-
-            if not func_stack:
-                continue  # ignore top-level uses/assigns
-
-            func = func_stack[-1]
-
-            # Resource guards
-            if func.defs_count > self.cfg.max_defs_per_func or func.uses_count > self.cfg.max_uses_per_func:
-                sink.emit(Anomaly(
-                    path=fm.path, blob_sha=fm.blob_sha, kind=AnomalyKind.MEMORY_LIMIT, severity=Severity.ERROR,
-                    detail="DFG limits exceeded", span=(ev.byte_start, ev.byte_end),
-                ))
-                # drop rest of this function
-                func_stack.pop()
-                continue
-
+        for i, ev in enumerate(self.events):
             if ev.kind == CstEventKind.ENTER:
-                # parameter list starts
-                if adapter.is_param_list(ev.type):
-                    func.in_params = True
-                if adapter.is_assign(ev.type):
-                    func.assign_stack.append(ev.byte_start)
-
+                self.node_stack.append(ev)
+                yield from self._handle_enter_event(ev, i)
             elif ev.kind == CstEventKind.TOKEN:
-                # params
-                if func.in_params and adapter.is_param_token(ev.type):
-                    name = self._safe_token_name(ev, fm)
-                    if name:
-                        for out in emit_param(name, func, ev):
-                            yield out
-                    continue
-
-                # assignment LHS variable defs (heuristic: identifier tokens that appear soon after an assignment ENTER)
-                if adapter.is_identifier_token(ev.type):
-                    name = self._safe_token_name(ev, fm)
-                    if not name:
-                        continue
-                    if func.assign_stack:
-                        # Treat first identifier after an assignment as a DEF; subsequent identifiers are uses.
-                        # This is conservative (covers simple patterns: x = ..., let x = ..., x += ...)
-                        for out in emit_var_def(name, func, ev):
-                            yield out
-                        # attach any pending literals as CONST_PARTs targeting this new def
-                        # we can’t know literal ids here (streaming); so we emit edges later when we emit literals: store target id in pending list
-                        # Instead: synthesize a stable target placeholder id for this def (logical id), and connect literal → logical-def
-                        def logical_def_id(nm: str, ver: int) -> str:
-                            return _stable_id(self.cfg.id_salt, "node", fm.path, fm.blob_sha, func.func_id, "var_def", nm, str(func.versions.get(nm, 0)))
-                        target = logical_def_id(name, func.versions.get(name, 0))
-                        # mark where to connect; actual connection occurs when literal appears (below) using same target id
-                        func.pending_literals.append(target)
-                        # only treat the first identifier after opening assignment as LHS; pop to avoid marking all as defs
-                        func.assign_stack.pop()
-                    else:
-                        # plain use
-                        for out in emit_var_use(name, func, ev):
-                            yield out
-                    continue
-
-                # literals → emit literal nodes & const_part edges to most recent pending target (if any)
-                if (self.cfg.capture_string_literals and adapter.is_string_token(ev.type)) or (
-                    self.cfg.capture_numeric_literals and adapter.is_number_token(ev.type)
-                ):
-                    # emit literal node
-                    lit_id_out = ""
-                    for out in emit_literal(ev.type, func, ev):
-                        if isinstance(out, tuple) and out[0] == "dfg_node":
-                            lit_id_out = out[1].id  # type: ignore[attr-defined]
-                        yield out
-                    if func.pending_literals and lit_id_out:
-                        # connect literal to last pending def placeholder
-                        target = func.pending_literals[-1]
-                        for out in emit_const_part(lit_id_out, target, func, ev):
-                            yield out
-                    continue
-
+                yield from self._handle_token_event(ev)
             elif ev.kind == CstEventKind.EXIT:
-                if adapter.is_param_list(ev.type):
-                    func.in_params = False
-                if adapter.is_function(ev.type):
-                    # Baseline: ensure at least PARAM -> RETURN MAY_FLOW
-                    if func.param_nodes:
-                        # Create a synthetic RETURN node at function end span
-                        ret_id = node_id(DfgNodeKind.VAR_USE, func.func_id, "__return__", None, ev)
-                        ret_row = DfgNodeRow(
-                            id=ret_id, func_id=func.func_id, kind=DfgNodeKind.VAR_USE, name="__return__", version=None,
-                            path=fm.path, lang=fm.lang, attrs_json=_compact({"baseline": True}), prov=prov(ev),
-                        )
-                        yield ("dfg_node", ret_row)
-                        for name, pid in func.param_nodes:
-                            eid = edge_id(DfgEdgeKind.ARG_TO_PARAM, func.func_id, pid, ret_id, ev)
-                            er = DfgEdgeRow(
-                                id=eid, func_id=func.func_id, kind=DfgEdgeKind.ARG_TO_PARAM, src_id=pid, dst_id=ret_id,
-                                path=fm.path, lang=fm.lang, attrs_json=_compact({"baseline": True}), prov=prov(ev),
-                            )
-                            yield ("dfg_edge", er)
-                    func_stack.pop()
-                # close assignment expression scope if EXIT matches last assignment ENTER (best-effort)
-                if adapter.is_assign(ev.type) and func.assign_stack:
-                    func.assign_stack.pop()
+                if self.node_stack:
+                    yield from self._handle_exit_event(self.node_stack[-1])
+                    self.node_stack.pop()
 
-        # synthesize close for any dangling functions
-        while func_stack:
-            func_stack.pop()
+    def _handle_enter_event(self, ev: CstEvent, event_index: int) -> Iterator[Tuple[str, object]]:
+        if self.adapter.is_function(ev.type):
+            parent_scope = self.scope_stack[-1]
+            func_name = self._find_name_in_node_span(event_index) or "<anonymous>"
+            func_scope_id = _stable_id(self.cfg.id_salt, "scope", self.fm.path, self.fm.blob_sha or "", parent_scope.scope_id, "function", func_name, str(ev.byte_start))
+            func_scope = Scope(func_scope_id, parent_scope)
+            self.scope_stack.append(func_scope)
+            
+            params = self._find_params_in_node_span(event_index)
+            for param_name, param_event in params:
+                param_node_id = self._node_id(DfgNodeKind.PARAM, func_scope.scope_id, param_name, 0, param_event)
+                yield ("dfg_node", DfgNodeRow(
+                    id=param_node_id, func_id=func_scope.scope_id, kind=DfgNodeKind.PARAM, name=param_name, version=0,
+                    path=self.fm.path, lang=self.fm.lang, attrs_json=_compact({}),
+                    prov=build_provenance_from_event(self.fm, self.info, param_event)
+                ))
+                func_scope.define_variable(param_name, param_node_id)
+                
+        elif self.adapter.is_assign(ev.type):
+            self.current_assignment = {"operator_found": False, "lhs_vars": [], "rhs_vars": []}
 
-    # ---- utilities ------------------------------------------------------------
+    def _handle_token_event(self, ev: CstEvent) -> Iterator[Tuple[str, object]]:
+        token_text = self._safe_token_text(ev)
+        if self.current_assignment and not self.current_assignment["operator_found"]:
+            if token_text and self.adapter.is_assignment_operator(token_text):
+                self.current_assignment["operator_found"] = True
+                return
 
-    def _safe_token_name(self, ev: CstEvent, fm: FileMeta) -> Optional[str]:
-        """Memory-lean, conservative identifier extraction (<=1KB slice)."""
+        name = self._safe_token_name(ev)
+        if not name or not self.adapter.is_identifier_token(ev.type):
+            return
+
+        if self.current_assignment:
+            if not self.current_assignment["operator_found"] or self._is_inside_assign_target():
+                self.current_assignment["lhs_vars"].append((name, ev))
+            else:
+                self.current_assignment["rhs_vars"].append((name, ev))
+        else:
+            current_scope = self.scope_stack[-1]
+            var_state = current_scope.find_variable(name)
+            if var_state and var_state.defining_node_id:
+                use_node_id = self._node_id(DfgNodeKind.VAR_USE, current_scope.scope_id, name, var_state.version, ev)
+                yield ("dfg_node", DfgNodeRow(
+                    id=use_node_id, func_id=current_scope.scope_id, kind=DfgNodeKind.VAR_USE, name=name, version=var_state.version,
+                    path=self.fm.path, lang=self.fm.lang, attrs_json=_compact({}), 
+                    prov=build_provenance_from_event(self.fm, self.info, ev)
+                ))
+                yield ("dfg_edge", DfgEdgeRow(
+                    id=self._edge_id(DfgEdgeKind.DEF_USE, current_scope.scope_id, var_state.defining_node_id, use_node_id, ev),
+                    func_id=current_scope.scope_id, kind=DfgEdgeKind.DEF_USE, src_id=var_state.defining_node_id, dst_id=use_node_id,
+                    path=self.fm.path, lang=self.fm.lang, attrs_json=_compact({"name": name, "version": var_state.version}),
+                    prov=build_provenance_from_event(self.fm, self.info, ev)
+                ))
+
+    def _handle_exit_event(self, exited_node_event: CstEvent) -> Iterator[Tuple[str, object]]:
+        if self.adapter.is_function(exited_node_event.type):
+            if len(self.scope_stack) > 1:
+                self.scope_stack.pop()
+        elif self.adapter.is_assign(exited_node_event.type):
+            if self.current_assignment:
+                current_scope = self.scope_stack[-1]
+                
+                # Process RHS (uses) first
+                for name, token_ev in self.current_assignment["rhs_vars"]:
+                    var_state = current_scope.find_variable(name)
+                    if var_state and var_state.defining_node_id:
+                        use_node_id = self._node_id(DfgNodeKind.VAR_USE, current_scope.scope_id, name, var_state.version, token_ev)
+                        yield ("dfg_node", DfgNodeRow(
+                            id=use_node_id, func_id=current_scope.scope_id, kind=DfgNodeKind.VAR_USE, name=name, version=var_state.version,
+                            path=self.fm.path, lang=self.fm.lang, attrs_json=_compact({}),
+                            prov=build_provenance_from_event(self.fm, self.info, token_ev)
+                        ))
+                        yield ("dfg_edge", DfgEdgeRow(
+                            id=self._edge_id(DfgEdgeKind.DEF_USE, current_scope.scope_id, var_state.defining_node_id, use_node_id, token_ev),
+                            func_id=current_scope.scope_id, kind=DfgEdgeKind.DEF_USE, src_id=var_state.defining_node_id, dst_id=use_node_id,
+                            path=self.fm.path, lang=self.fm.lang, attrs_json=_compact({}),
+                            prov=build_provenance_from_event(self.fm, self.info, token_ev)
+                        ))
+                
+                # Process LHS (defs) second
+                for name, token_ev in self.current_assignment["lhs_vars"]:
+                    new_def_node_id_placeholder = self._node_id(DfgNodeKind.VAR_DEF, current_scope.scope_id, name, -1, token_ev)
+                    var_state = current_scope.define_variable(name, new_def_node_id_placeholder)
+                    new_def_node_id = self._node_id(DfgNodeKind.VAR_DEF, current_scope.scope_id, name, var_state.version, token_ev)
+                    var_state.defining_node_id = new_def_node_id
+                    
+                    yield ("dfg_node", DfgNodeRow(
+                        id=new_def_node_id, func_id=current_scope.scope_id, kind=DfgNodeKind.VAR_DEF, name=name, version=var_state.version,
+                        path=self.fm.path, lang=self.fm.lang, attrs_json=_compact({}),
+                        prov=build_provenance_from_event(self.fm, self.info, token_ev)
+                    ))
+                
+                # Check for simple alias
+                if len(self.current_assignment["lhs_vars"]) == 1 and len(self.current_assignment["rhs_vars"]) == 1:
+                    lhs_name, _ = self.current_assignment["lhs_vars"][0]
+                    rhs_name, _ = self.current_assignment["rhs_vars"][0]
+                    yield ("alias_hint", {"lhs_name": lhs_name, "rhs_name": rhs_name, "scope_id": current_scope.scope_id})
+
+                self.current_assignment = None
+
+    def _find_node_span_indices(self, parent_enter_index: int) -> Tuple[int, int]:
+        start_index = parent_enter_index
+        start_byte = self.events[start_index].byte_start
+        end_byte = self.events[start_index].byte_end
+        
+        # Find the matching EXIT event
+        depth = 0
+        for i in range(start_index, len(self.events)):
+            ev = self.events[i]
+            if ev.byte_start < start_byte: continue
+            
+            if ev.kind == CstEventKind.ENTER and ev.byte_start >= start_byte:
+                depth += 1
+            elif ev.kind == CstEventKind.EXIT and ev.byte_start >= start_byte:
+                depth -= 1
+            
+            if depth == 0 and ev.byte_start == start_byte:
+                return start_index, i
+        return start_index, len(self.events) - 1
+
+    def _find_child_node_span(self, parent_enter_index: int, child_types: set[str]) -> Optional[Tuple[int, int]]:
+        depth = 0
+        for i in range(parent_enter_index + 1, len(self.events)):
+            ev = self.events[i]
+            if ev.kind == CstEventKind.ENTER:
+                if depth == 0 and ev.type in child_types:
+                    return self._find_node_span_indices(i)
+                depth += 1
+            elif ev.kind == CstEventKind.EXIT:
+                depth -= 1
+            
+            if depth < 0:
+                return None
+        return None
+
+    def _find_name_in_node_span(self, node_enter_index: int) -> Optional[str]:
+        start, end = self._find_node_span_indices(node_enter_index)
+        depth = 0
+        for i in range(start + 1, end):
+            ev = self.events[i]
+            if ev.kind == CstEventKind.ENTER:
+                depth += 1
+            elif ev.kind == CstEventKind.EXIT:
+                depth -= 1
+
+            if depth == 0 and self.adapter.is_identifier_token(ev.type):
+                name = self._safe_token_name(ev)
+                if name: return name
+        return None
+
+    def _find_params_in_node_span(self, node_enter_index: int) -> List[Tuple[str, CstEvent]]:
+        params = []
+        param_list_span = self._find_child_node_span(node_enter_index, self.adapter.param_list_nodes)
+        if not param_list_span:
+            return []
+            
+        start, end = param_list_span
+        depth = 0
+        for i in range(start + 1, end):
+            ev = self.events[i]
+            if ev.kind == CstEventKind.ENTER:
+                depth += 1
+            elif ev.kind == CstEventKind.EXIT:
+                depth -= 1
+            
+            if depth == 0 and self.adapter.is_param_token(ev.type):
+                name = self._safe_token_name(ev)
+                if name:
+                    params.append((name, ev))
+        return params
+
+    def _is_inside_assign_target(self) -> bool:
+        """Checks the node_stack to see if the current context is inside an assignment target."""
+        for node_event in reversed(self.node_stack):
+            if self.adapter.is_assign_target(node_event.type):
+                return True
+            if self.adapter.is_assign(node_event.type):
+                return False
+        return False
+
+    def _node_id(self, kind: DfgNodeKind, func_id: str, name: Optional[str], version: Optional[int], ev: CstEvent) -> str:
+        vpart = "" if version is None else str(version)
+        nmpart = "" if name is None else name
+        return _stable_id(self.cfg.id_salt, "node", self.fm.path, self.fm.blob_sha or "", func_id, kind.value, nmpart, vpart, str(ev.byte_start))
+
+    def _edge_id(self, kind: DfgEdgeKind, func_id: str, src: str, dst: str, ev: CstEvent) -> str:
+        return _stable_id(self.cfg.id_salt, "edge", self.fm.path, self.fm.blob_sha or "", func_id, kind.value, src, dst, str(ev.byte_start))
+        
+    def _safe_token_name(self, ev: CstEvent) -> Optional[str]:
         try:
-            if ev.byte_end <= ev.byte_start:
-                return None
-            size = ev.byte_end - ev.byte_start
-            if size > 1024:
-                return None
-            with open(fm.real_path, "rb") as f:
+            if ev.byte_end <= ev.byte_start or (ev.byte_end - ev.byte_start) > 1024: return None
+            with open(self.fm.real_path, "rb") as f:
                 f.seek(ev.byte_start)
-                token = f.read(size)
-            text = token.decode(fm.encoding or "utf-8", errors="replace").strip()
-            if not text or len(text) > 256:
-                return None
-            ch0 = text[0]
-            if not (ch0.isalpha() or ch0 == "_"):
-                return None
+                token = f.read(ev.byte_end - ev.byte_start)
+            text = token.decode(self.fm.encoding or "utf-8", errors="replace").strip()
+            if not text or len(text) > 256: return None
+            if not (text[0].isalpha() or text[0] == "_"): return None
             for ch in text[1:]:
-                if not (ch.isalnum() or ch in "._$"):
-                    return None
-            # avoid pure numbers
-            if text.replace("_", "").isdigit():
-                return None
+                if not (ch.isalnum() or ch in "._$"): return None
+            if text.replace("_", "").isdigit(): return None
             return text
-        except Exception:
-            return None
+        except Exception: return None
 
+    def _safe_token_text(self, ev: CstEvent) -> Optional[str]:
+        try:
+            if ev.byte_end <= ev.byte_start or (ev.byte_end - ev.byte_start) > 1024: return None
+            with open(self.fm.real_path, "rb") as f:
+                f.seek(ev.byte_start)
+                token = f.read(ev.byte_end - ev.byte_start)
+            return token.decode(self.fm.encoding or "utf-8", errors="replace").strip()
+        except Exception: return None
 
 # ==============================================================================
 # Public convenience
 # ==============================================================================
 
 def build_dfg(fm: FileMeta, info: Optional[DriverInfo], events: List[CstEvent], sink: AnomalySink, cfg: Optional[DfgConfig] = None) -> Iterator[Tuple[str, object]]:
-    builder = DfgBuilder(cfg)
-    yield from builder.build(fm, info, events, sink)
+    builder = DfgBuilder(fm, info, events, sink, cfg or DfgConfig())
+    yield from builder.build()
